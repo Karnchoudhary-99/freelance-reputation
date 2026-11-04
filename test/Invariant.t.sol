@@ -125,3 +125,129 @@ contract ReputationHandler is Test {
         vm.warp(block.timestamp + (seed % 400 days));
     }
 }
+/// @notice Score-accounting invariants over the registry lifecycle.
+contract ReputationInvariants is Test {
+    ReputationRegistry public registry;
+    ReputationHandler public handler;
+    address[] public actors;
+
+    function setUp() public {
+        registry = new ReputationRegistry();
+        actors.push(makeAddr("alice"));
+        actors.push(makeAddr("bob"));
+        actors.push(makeAddr("carol"));
+        actors.push(makeAddr("dave"));
+        actors.push(makeAddr("erin"));
+        actors.push(makeAddr("frank"));
+        handler = new ReputationHandler(registry, actors);
+        targetContract(address(handler));
+    }
+
+    function invariant_score_bounds_and_zero() public view {
+        for (uint256 i = 0; i < actors.length; i++) {
+            ReputationRegistry.Score memory s = registry.getScore(actors[i]);
+            assertLe(s.average, 10000);
+            if (s.count == 0) {
+                assertEq(s.average, 0);
+                assertEq(s.effectiveWeight, 0);
+                assertEq(s.totalWeight, 0);
+            } else {
+                assertGt(s.effectiveWeight, 0);
+                assertGt(s.totalWeight, 0);
+            }
+        }
+    }
+
+    function invariant_count_matches_active_records() public view {
+        for (uint256 i = 0; i < actors.length; i++) {
+            ReputationRegistry.Attestation[] memory recs = registry
+                .getAttestations(actors[i]);
+            uint256 active;
+            for (uint256 j = 0; j < recs.length; j++) {
+                if (!recs[j].revoked && !recs[j].disputed) active++;
+            }
+            assertEq(registry.getScore(actors[i]).count, active);
+        }
+    }
+
+    function invariant_category_counts_sum_to_overall() public view {
+        for (uint256 i = 0; i < actors.length; i++) {
+            uint256 sum;
+            for (uint256 c = 0; c < 5; c++) {
+                sum += registry
+                    .getScoreByCategory(
+                        actors[i],
+                        ReputationRegistry.Category(c)
+                    )
+                    .count;
+            }
+            assertEq(sum, registry.getScore(actors[i]).count);
+        }
+    }
+
+    function invariant_recomputed_average_matches() public view {
+        for (uint256 i = 0; i < actors.length; i++) {
+            ReputationRegistry.Attestation[] memory recs = registry
+                .getAttestations(actors[i]);
+            uint256 weightedSum;
+            uint256 effective;
+            uint256 total;
+            uint256 count;
+            for (uint256 j = 0; j < recs.length; j++) {
+                if (recs[j].revoked || recs[j].disputed) continue;
+                uint256 eff = uint256(recs[j].weight) *
+                    registry.decayFactorBps(recs[j].updatedAt);
+                weightedSum += uint256(recs[j].score) * eff;
+                effective += eff;
+                total += recs[j].weight;
+                count++;
+            }
+            ReputationRegistry.Score memory s = registry.getScore(actors[i]);
+            assertEq(s.count, count);
+            assertEq(s.effectiveWeight, effective);
+            assertEq(s.totalWeight, total);
+            if (count > 0) {
+                assertEq(s.average, (weightedSum * 100) / effective);
+            } else {
+                assertEq(s.average, 0);
+            }
+        }
+    }
+
+    function invariant_no_duplicate_active_keys() public view {
+        for (uint256 i = 0; i < actors.length; i++) {
+            ReputationRegistry.Attestation[] memory recs = registry
+                .getAttestations(actors[i]);
+            for (uint256 j = 0; j < recs.length; j++) {
+                if (recs[j].revoked || recs[j].disputed) continue;
+                for (uint256 k = j + 1; k < recs.length; k++) {
+                    if (recs[k].revoked || recs[k].disputed) continue;
+                    // Two active records for the same subject must never
+                    // share (attester, category): re-attesting updates.
+                    assertTrue(
+                        recs[j].attester != recs[k].attester ||
+                            recs[j].category != recs[k].category
+                    );
+                }
+            }
+        }
+    }
+
+    function invariant_record_ranges_and_totals() public view {
+        assertEq(registry.attestationCount(), handler.created());
+        uint256 summed;
+        for (uint256 i = 0; i < actors.length; i++) {
+            ReputationRegistry.Attestation[] memory recs = registry
+                .getAttestations(actors[i]);
+            summed += recs.length;
+            assertEq(recs.length, handler.createdFor(actors[i]));
+            for (uint256 j = 0; j < recs.length; j++) {
+                assertLe(recs[j].score, 100);
+                assertGe(recs[j].weight, 1);
+                assertLe(recs[j].weight, 3);
+                assertTrue(recs[j].attester != recs[j].subject);
+            }
+        }
+        assertEq(summed, handler.created());
+    }
+}
