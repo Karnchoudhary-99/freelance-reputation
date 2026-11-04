@@ -321,6 +321,58 @@ contract ReputationRegistryTest is Test {
         assertEq(registry.getScore(alice).average, 5000);
     }
 
+    function testDecayAppliesToCategoryScores() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Quality, 100, bytes32(0));
+        vm.warp(block.timestamp + 200 days);
+        vm.prank(carol);
+        registry.attest(alice, ReputationRegistry.Category.Quality, 0, bytes32(0));
+        // Quality: bob half-weight, carol full -> 100*5000/15000 = 33.33.
+        assertEq(registry.getScoreByCategory(alice, ReputationRegistry.Category.Quality).average, 3333);
+        // Overall matches the category here (only Quality attestations exist).
+        assertEq(registry.getScore(alice).average, 3333);
+    }
+
+    function testAttesterWeightUsesDecayedAverage() public {
+        vm.prank(carol);
+        registry.attest(bob, ReputationRegistry.Category.Overall, 90, bytes32(0));
+        vm.prank(dave);
+        registry.attest(bob, ReputationRegistry.Category.Overall, 90, bytes32(0));
+        assertEq(registry.attesterWeight(bob), 3);
+        // A year later bob's endorsements are quarter-weight, but the
+        // average is still 90 — weight must stay 3 (decay shrinks weight,
+        // not the average itself). What DOES drop the weight is a disputed
+        // attestation being excluded: dispute both, and bob has no score.
+        vm.warp(block.timestamp + 400 days);
+        assertEq(registry.attesterWeight(bob), 3);
+        vm.prank(bob);
+        registry.disputeAttestation(0, bytes32(0));
+        vm.prank(bob);
+        registry.disputeAttestation(1, bytes32(0));
+        assertEq(registry.attesterWeight(bob), 1);
+    }
+
+    function testDisputeOfRevokedRecordReverts() public {
+        vm.prank(bob);
+        uint256 id = registry.attest(alice, ReputationRegistry.Category.Overall, 20, bytes32(0));
+        vm.prank(bob);
+        registry.revokeAttestation(id);
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.AlreadyRevoked.selector);
+        registry.disputeAttestation(id, bytes32(0));
+    }
+
+    function testExpireDisputeOnlySubject() public {
+        vm.prank(bob);
+        uint256 id = registry.attest(alice, ReputationRegistry.Category.Overall, 20, bytes32(0));
+        vm.prank(alice);
+        registry.disputeAttestation(id, bytes32(0));
+        vm.warp(block.timestamp + 31 days);
+        vm.prank(carol);
+        vm.expectRevert(ReputationRegistry.NotSubject.selector);
+        registry.expireDispute(id);
+    }
+
     function testCategoryScoreFilters() public {
         vm.prank(bob);
         registry.attest(alice, ReputationRegistry.Category.Quality, 100, bytes32(0));
