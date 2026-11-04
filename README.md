@@ -13,6 +13,7 @@ that travel with the worker, not the platform.
 - [x] Signed attestations (EIP-712, relayer-submitted, nonce replay protection)
 - [x] Attester reads (per-attester index, paginated records, track-record stats)
 - [x] Reputation tiers (Unranked → Elite, average-plus-count thresholds)
+- [x] Signed batch attestations (mixed-attester relayed batches, atomic)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -106,6 +107,12 @@ relayer (a platform backend, a friend) submits it:
   without burning the nonce. All the usual guards still apply inside
   `attest` — a signed self-attestation or an out-of-range score reverts,
   and a signed re-attestation updates the existing record in place.
+- `attestBatchBySignature(inputs)` — the same, batched: a platform
+  onboarding clients who sign off-chain submits many signed attestations
+  (possibly from many attesters) in one transaction. Atomic like
+  `attestBatch` — a bad signature or an expired entry reverts the whole
+  batch, and the revert rolls every nonce increment back, so no signer
+  loses a nonce to a failed batch.
 
 ### Attester reads
 
