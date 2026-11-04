@@ -95,4 +95,45 @@ contract SignedAttestationTest is Test {
         // An expired submission must not burn the nonce.
         assertEq(registry.nonces(bob), 0);
     }
+
+    function testSignedAttestationRejectsWrongSignerAndTampering() public {
+        uint256 deadline = block.timestamp + 1 days;
+        // Signed by carol's key but presented as bob's attestation.
+        (uint8 v, bytes32 r, bytes32 s) = _sign(
+            carolKey, bob, alice, ReputationRegistry.Category.Overall, 70, bytes32(0), 0, deadline
+        );
+        vm.expectRevert(ReputationRegistry.InvalidSignature.selector);
+        registry.attestBySignature(
+            bob, alice, ReputationRegistry.Category.Overall, 70, bytes32(0), deadline, v, r, s
+        );
+        // Genuine bob signature, but the relayer tampered with the score.
+        (v, r, s) = _sign(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 70, bytes32(0), 0, deadline
+        );
+        vm.expectRevert(ReputationRegistry.InvalidSignature.selector);
+        registry.attestBySignature(
+            bob, alice, ReputationRegistry.Category.Overall, 71, bytes32(0), deadline, v, r, s
+        );
+        assertEq(registry.nonces(bob), 0);
+    }
+
+    function testSignedAttestationKeepsCoreGuards() public {
+        uint256 deadline = block.timestamp + 1 days;
+        // Self-attestation via signature.
+        (uint8 v, bytes32 r, bytes32 s) = _sign(
+            bobKey, bob, bob, ReputationRegistry.Category.Overall, 100, bytes32(0), 0, deadline
+        );
+        vm.expectRevert(ReputationRegistry.SelfAttestation.selector);
+        registry.attestBySignature(
+            bob, bob, ReputationRegistry.Category.Overall, 100, bytes32(0), deadline, v, r, s
+        );
+        // Score above 100 via signature.
+        (v, r, s) = _sign(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 101, bytes32(0), 1, deadline
+        );
+        vm.expectRevert(ReputationRegistry.InvalidScore.selector);
+        registry.attestBySignature(
+            bob, alice, ReputationRegistry.Category.Overall, 101, bytes32(0), deadline, v, r, s
+        );
+    }
 }
