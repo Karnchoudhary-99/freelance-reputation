@@ -26,6 +26,7 @@ not mainnet quotes.
 | `getScoreByCategory` (view) | 19,585 | 20,939 | 20,943 | 22,287 | 4 |
 | `attesterWeight` (view) | 2,956 | 15,648 | 14,944 | 21,854 | 7 |
 | `decayFactorBps` (view) | 443 | 566 | 596 | 597 | 6 |
+| `getLeaderboard` (view) | 3,059 | 36,357 | 32,682 | 59,948 | 10 |
 
 ## Reading the numbers
 
@@ -48,6 +49,10 @@ not mainnet quotes.
 - **Dispute operations are cheap and flat** (26–80k gas): they flip
   flags on one record rather than rewriting score state, which is why
   disputing never needs to touch other attestations.
+- **Leaderboard reads scale with the subject set:** `getLeaderboard`
+  measured 3–60k gas on the small boards in the test suite (up to 3
+  subjects); it scans every registered subject, so on a busy registry
+  it is a view for off-chain `eth_call`, not a transaction input.
 - **Invariant fuzz baseline:** `test/Invariant.t.sol` runs 6 invariants
   × 256 runs × depth 100 (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
