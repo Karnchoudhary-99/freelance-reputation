@@ -59,6 +59,20 @@ contract ReputationRegistry {
         bytes32 commentHash;
     }
 
+    /// @notice One signed attestation input for a relayed batch call: the
+    ///         same fields as a signed attestation, plus the signature.
+    struct SignedAttestInput {
+        address attester;
+        address subject;
+        Category category;
+        uint8 score;
+        bytes32 commentHash;
+        uint256 deadline;
+        uint8 v;
+        bytes32 r;
+        bytes32 s;
+    }
+
     /// @notice Overall + per-category scores in a single read, so an
     ///         integrating frontend needs one RPC call, not five.
     struct Profile {
@@ -235,6 +249,54 @@ contract ReputationRegistry {
         }
         nonces[attester] = nonce + 1;
         return _attest(attester, subject, category, score, commentHash);
+    }
+
+    /// @notice Submit many signed attestations in one transaction — the
+    ///         onboarding path for a platform whose clients sign off-chain.
+    ///         Atomic like `attestBatch`: any invalid entry (expired,
+    ///         bad signature, bad score) reverts the whole batch, and a
+    ///         revert rolls back every nonce increment, so no signer loses
+    ///         a nonce to a failed batch. Entries may mix attesters; each
+    ///         entry is verified against its own attester's nonce.
+    function attestBatchBySignature(
+        SignedAttestInput[] calldata inputs
+    ) external returns (uint256[] memory ids) {
+        ids = new uint256[](inputs.length);
+        for (uint256 i = 0; i < inputs.length; i++) {
+            SignedAttestInput calldata inp = inputs[i];
+            _verifySignedAttest(inp);
+            ids[i] = _attest(
+                inp.attester,
+                inp.subject,
+                inp.category,
+                inp.score,
+                inp.commentHash
+            );
+        }
+    }
+
+    /// @notice Verify one signed attestation and consume its nonce.
+    function _verifySignedAttest(SignedAttestInput calldata inp) internal {
+        if (block.timestamp > inp.deadline) revert ExpiredSignature();
+        uint256 nonce = nonces[inp.attester];
+        address recovered = ecrecover(
+            _attestDigest(
+                inp.attester,
+                inp.subject,
+                inp.category,
+                inp.score,
+                inp.commentHash,
+                nonce,
+                inp.deadline
+            ),
+            inp.v,
+            inp.r,
+            inp.s
+        );
+        if (recovered == address(0) || recovered != inp.attester) {
+            revert InvalidSignature();
+        }
+        nonces[inp.attester] = nonce + 1;
     }
 
     /// @notice EIP-712 digest for a signed attestation (extracted so the
