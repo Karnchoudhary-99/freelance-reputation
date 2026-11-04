@@ -221,6 +221,30 @@ contract ReputationRegistry {
     ) external returns (uint256 id) {
         if (block.timestamp > deadline) revert ExpiredSignature();
         uint256 nonce = nonces[attester];
+        address recovered = ecrecover(
+            _attestDigest(attester, subject, category, score, commentHash, nonce, deadline),
+            v,
+            r,
+            s
+        );
+        if (recovered == address(0) || recovered != attester) {
+            revert InvalidSignature();
+        }
+        nonces[attester] = nonce + 1;
+        return _attest(attester, subject, category, score, commentHash);
+    }
+
+    /// @notice EIP-712 digest for a signed attestation (extracted so the
+    ///         caller stays under the stack limit).
+    function _attestDigest(
+        address attester,
+        address subject,
+        Category category,
+        uint8 score,
+        bytes32 commentHash,
+        uint256 nonce,
+        uint256 deadline
+    ) internal view returns (bytes32) {
         bytes32 structHash = keccak256(
             abi.encode(
                 ATTEST_TYPEHASH,
@@ -233,15 +257,7 @@ contract ReputationRegistry {
                 deadline
             )
         );
-        bytes32 digest = keccak256(
-            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
-        );
-        address recovered = ecrecover(digest, v, r, s);
-        if (recovered == address(0) || recovered != attester) {
-            revert InvalidSignature();
-        }
-        nonces[attester] = nonce + 1;
-        return _attest(attester, subject, category, score, commentHash);
+        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
     }
 
     function _attest(
