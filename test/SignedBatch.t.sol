@@ -119,4 +119,39 @@ contract SignedBatchTest is Test {
         assertEq(registry.attestationCount(), 0);
         assertEq(registry.nonces(bob), 0);
     }
+
+    function testSignedBatchRejectsDuplicateNonce() public {
+        uint256 deadline = block.timestamp + 1 days;
+        ReputationRegistry.SignedAttestInput[] memory inputs =
+            new ReputationRegistry.SignedAttestInput[](2);
+        // Both entries signed with nonce 0 for bob: the second entry's
+        // verification runs after the first consumed nonce 0.
+        inputs[0] = _signed(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 80, 0, deadline
+        );
+        inputs[1] = _signed(
+            bobKey, bob, dave, ReputationRegistry.Category.Overall, 90, 0, deadline
+        );
+        vm.expectRevert(ReputationRegistry.InvalidSignature.selector);
+        registry.attestBatchBySignature(inputs);
+        assertEq(registry.attestationCount(), 0);
+        assertEq(registry.nonces(bob), 0);
+    }
+
+    function testSignedBatchUpdatesInPlace() public {
+        uint256 deadline = block.timestamp + 1 days;
+        ReputationRegistry.SignedAttestInput[] memory inputs =
+            new ReputationRegistry.SignedAttestInput[](1);
+        inputs[0] = _signed(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 60, 0, deadline
+        );
+        uint256[] memory first = registry.attestBatchBySignature(inputs);
+        inputs[0] = _signed(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 95, 1, deadline
+        );
+        uint256[] memory second = registry.attestBatchBySignature(inputs);
+        assertEq(second[0], first[0]);
+        assertEq(registry.attestationCount(), 1);
+        assertEq(registry.getScore(alice).average, 9500);
+    }
 }
