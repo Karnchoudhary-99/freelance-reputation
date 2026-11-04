@@ -138,4 +138,25 @@ contract SignedAttestationTest is Test {
             bob, alice, ReputationRegistry.Category.Overall, 101, bytes32(0), deadline, v, r, s
         );
     }
+
+    function testSignedAttestationUpdatesInPlace() public {
+        uint256 deadline = block.timestamp + 1 days;
+        (uint8 v, bytes32 r, bytes32 s) = _sign(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 60, bytes32("v1"), 0, deadline
+        );
+        uint256 first = registry.attestBySignature(
+            bob, alice, ReputationRegistry.Category.Overall, 60, bytes32("v1"), deadline, v, r, s
+        );
+        (v, r, s) = _sign(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 95, bytes32("v2"), 1, deadline
+        );
+        uint256 second = registry.attestBySignature(
+            bob, alice, ReputationRegistry.Category.Overall, 95, bytes32("v2"), deadline, v, r, s
+        );
+        assertEq(second, first);
+        assertEq(registry.attestationCount(), 1);
+        ReputationRegistry.Score memory sc = registry.getScore(alice);
+        assertEq(sc.average, 9500);
+        assertEq(sc.count, 1);
+    }
 }
