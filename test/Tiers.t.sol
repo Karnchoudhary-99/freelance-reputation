@@ -70,6 +70,21 @@ contract TiersTest is Test {
         );
     }
 
+    function testDecayedEndorsementsWeighLessInTier() public {
+        // An old perfect endorsement decayed to quarter weight plus a
+        // fresh zero: (100*2500 + 0*10000) / 12500 = 20 average, count 2
+        // -> Emerging, not Established, despite the 100 on record.
+        _attestFrom(makeAddr("old"), 100);
+        vm.warp(block.timestamp + 400 days);
+        _attestFrom(makeAddr("fresh"), 0);
+        ReputationRegistry.Score memory sc = registry.getScore(alice);
+        assertEq(sc.average, 2000);
+        assertEq(
+            uint256(registry.tierOf(alice)),
+            uint256(ReputationRegistry.Tier.Emerging)
+        );
+    }
+
     function testTierDropsWhenEndorsementCountFalls() public {
         for (uint256 i = 0; i < 10; i++) {
             _attestFrom(makeAddr(string(abi.encodePacked("d", i))), 95);
