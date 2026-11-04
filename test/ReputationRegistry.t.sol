@@ -150,6 +150,59 @@ contract ReputationRegistryTest is Test {
         assertEq(registry.attesterWeight(alice), 1);
     }
 
+    function testDecayFactorTiers() public {
+        vm.warp(20 * 365 days); // far enough back that tier math never underflows
+        uint64 now_ = uint64(block.timestamp);
+        assertEq(registry.decayFactorBps(now_), 10000);
+        assertEq(registry.decayFactorBps(now_ - 89 days), 10000);
+        assertEq(registry.decayFactorBps(now_ - 90 days), 5000);
+        assertEq(registry.decayFactorBps(now_ - 364 days), 5000);
+        assertEq(registry.decayFactorBps(now_ - 365 days), 2500);
+        assertEq(registry.decayFactorBps(now_ - 10 * 365 days), 2500);
+    }
+
+    function testDecayedAverageHalvesOldAttestation() public {
+        // bob scores alice 100 (fresh, full weight), carol scores 0, then a
+        // year passes for carol's attestation only if it ages... warp moves
+        // both, so attest bob's record second, after the warp.
+        vm.prank(carol);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 0, bytes32(0));
+        vm.warp(block.timestamp + 200 days);
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 100, bytes32(0));
+        // carol at half weight (5000 bps), bob at full (10000 bps):
+        // (0*5000 + 100*10000) / 15000 = 66.66
+        ReputationRegistry.Score memory s = registry.getScore(alice);
+        assertEq(s.average, 6666);
+        assertEq(s.count, 2);
+        assertEq(s.totalWeight, 2); // raw weights unchanged by decay
+        assertEq(s.effectiveWeight, 15000);
+    }
+
+    function testQuarterWeightAfterOneYear() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 100, bytes32(0));
+        vm.warp(block.timestamp + 400 days);
+        vm.prank(carol);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 0, bytes32(0));
+        // bob at quarter weight (2500), carol full (10000): 100*2500/12500 = 20.00
+        assertEq(registry.getScore(alice).average, 2000);
+        assertEq(registry.getScore(alice).effectiveWeight, 12500);
+    }
+
+    function testReAttestRefreshesDecayClock() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 0, bytes32(0));
+        vm.warp(block.timestamp + 200 days);
+        // bob re-attests: same record, fresh clock, still score 0.
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 0, bytes32(0));
+        vm.prank(carol);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 100, bytes32(0));
+        // Both full weight now: (0 + 100) / 2 = 50.00, not 33.33.
+        assertEq(registry.getScore(alice).average, 5000);
+    }
+
     function testCategoryScoreFilters() public {
         vm.prank(bob);
         registry.attest(alice, ReputationRegistry.Category.Quality, 100, bytes32(0));
