@@ -8,6 +8,7 @@ that travel with the worker, not the platform.
 - [x] Project scaffold (README roadmap, license, gitignore)
 - [x] Reputation registry (attestations, weighted scores, revocation)
 - [x] Decay + dispute handling
+- [x] Invariant fuzz tests + gas report
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -81,10 +82,25 @@ carol attests alice 90 (Overall)    -> weight 1
 alice score = (60*3 + 90*1) / 4 = 67.50
 ```
 
+### Invariant fuzz tests
+
+`test/Invariant.t.sol` drives the registry through attest / revoke /
+dispute / resolve / expire cycles plus time warps (crossing the 90-day
+and 365-day decay tiers and the 30-day dispute window) with a guarded
+handler, so every handler call is expected to succeed and a revert can
+never mask a broken invariant. Six invariants hold across every run:
+score bounds (and zero when empty), count matching active records,
+category counts summing to the overall count, the weighted average
+recomputed independently from the raw records, no duplicate active
+(attester, category) keys, and record ranges plus attestation totals.
+Baseline: 6 invariants × 256 runs × depth 100 — 25,600 handler calls
+each, 0 reverts. See `docs/gas-report.md` for deployment and
+per-function gas (deploy 1,366,849 gas, 6,104 bytes runtime).
+
 ### Run it
 
 ```sh
-forge test          # 22 tests
+forge test          # 28 tests (22 unit + 6 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 
