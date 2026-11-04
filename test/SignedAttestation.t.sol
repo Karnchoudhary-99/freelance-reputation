@@ -66,4 +66,33 @@ contract SignedAttestationTest is Test {
         assertEq(sc.average, 8800);
         assertEq(sc.count, 1);
     }
+
+    function testSignedAttestationCannotBeReplayed() public {
+        uint256 deadline = block.timestamp + 1 days;
+        (uint8 v, bytes32 r, bytes32 s) = _sign(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 70, bytes32(0), 0, deadline
+        );
+        registry.attestBySignature(
+            bob, alice, ReputationRegistry.Category.Overall, 70, bytes32(0), deadline, v, r, s
+        );
+        // Same signature again: nonce moved to 1, so recovery mismatches.
+        vm.expectRevert(ReputationRegistry.InvalidSignature.selector);
+        registry.attestBySignature(
+            bob, alice, ReputationRegistry.Category.Overall, 70, bytes32(0), deadline, v, r, s
+        );
+    }
+
+    function testSignedAttestationRejectsExpiredDeadline() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _sign(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 70, bytes32(0), 0, deadline
+        );
+        vm.warp(deadline + 1);
+        vm.expectRevert(ReputationRegistry.ExpiredSignature.selector);
+        registry.attestBySignature(
+            bob, alice, ReputationRegistry.Category.Overall, 70, bytes32(0), deadline, v, r, s
+        );
+        // An expired submission must not burn the nonce.
+        assertEq(registry.nonces(bob), 0);
+    }
 }
