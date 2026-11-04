@@ -10,8 +10,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 1,366,849 gas |
-| Runtime size | 6,104 bytes |
+| Deployment cost | 1,724,969 gas |
+| Runtime size | 7,760 bytes |
 
 ## Function costs (gas)
 
@@ -39,6 +39,12 @@ not mainnet quotes.
   known trade-off versus maintaining running totals on-chain — reads
   are free off-chain via `eth_call`, and the scan keeps writes cheap
   and the accounting auditable.
+- **Batch attestation costs one transaction, not N:** the unit test
+  batching three fresh attestations costs 527,100 gas total, in line
+  with three first-attestations (~192k each) minus the repeated
+  per-transaction overhead a caller would pay for three separate
+  calls. Updating an existing record inside a batch stays at the
+  ~22k storage-update price.
 - **Dispute operations are cheap and flat** (26–80k gas): they flip
   flags on one record rather than rewriting score state, which is why
   disputing never needs to touch other attestations.
