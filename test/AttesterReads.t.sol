@@ -80,4 +80,35 @@ contract AttesterReadsTest is Test {
         // Keep the compiler honest about which id is which.
         assertEq(active, 0);
     }
+
+    function testSignedAttestationsAppearInAttesterIndex() public {
+        // Signed attestations go through the same _attest path, so the
+        // attester index must include them.
+        uint256 bobKey = 0xB0B;
+        address bobAddr = vm.addr(bobKey);
+        uint256 deadline = block.timestamp + 1 days;
+        bytes32 structHash = keccak256(
+            abi.encode(
+                registry.ATTEST_TYPEHASH(),
+                bobAddr,
+                alice,
+                ReputationRegistry.Category.Overall,
+                85,
+                bytes32(0),
+                0,
+                deadline
+            )
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", registry.DOMAIN_SEPARATOR(), structHash)
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(bobKey, digest);
+        registry.attestBySignature(
+            bobAddr, alice, ReputationRegistry.Category.Overall, 85, bytes32(0), deadline, v, r, s
+        );
+        assertEq(registry.attesterAttestationCount(bobAddr), 1);
+        ReputationRegistry.AttesterStats memory st = registry.attesterStats(bobAddr);
+        assertEq(st.given, 1);
+        assertEq(st.active, 1);
+    }
 }
