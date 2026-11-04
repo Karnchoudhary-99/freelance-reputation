@@ -127,9 +127,11 @@ contract SignedAttestationTest is Test {
         registry.attestBySignature(
             bob, bob, ReputationRegistry.Category.Overall, 100, bytes32(0), deadline, v, r, s
         );
-        // Score above 100 via signature.
+        // Score above 100 via signature. Note the reverted self-attestation
+        // above rolled its nonce increment back, so this signature still
+        // uses nonce 0.
         (v, r, s) = _sign(
-            bobKey, bob, alice, ReputationRegistry.Category.Overall, 101, bytes32(0), 1, deadline
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 101, bytes32(0), 0, deadline
         );
         vm.expectRevert(ReputationRegistry.InvalidScore.selector);
         registry.attestBySignature(
