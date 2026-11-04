@@ -82,4 +82,41 @@ contract SignedBatchTest is Test {
         assertEq(quality.average, 9000);
         assertEq(quality.count, 1);
     }
+
+    function testSignedBatchIsAtomicOnBadSignature() public {
+        uint256 deadline = block.timestamp + 1 days;
+        ReputationRegistry.SignedAttestInput[] memory inputs =
+            new ReputationRegistry.SignedAttestInput[](2);
+        inputs[0] = _signed(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 80, 0, deadline
+        );
+        // Second entry signed by carol's key but presented as bob's.
+        inputs[1] = _signed(
+            carolKey, bob, dave, ReputationRegistry.Category.Overall, 90, 1, deadline
+        );
+        vm.expectRevert(ReputationRegistry.InvalidSignature.selector);
+        registry.attestBatchBySignature(inputs);
+        // Atomicity: nothing landed and no nonce was consumed.
+        assertEq(registry.attestationCount(), 0);
+        assertEq(registry.nonces(bob), 0);
+        assertEq(registry.nonces(carol), 0);
+    }
+
+    function testSignedBatchIsAtomicOnExpiredEntry() public {
+        uint256 goodDeadline = block.timestamp + 1 days;
+        uint256 badDeadline = block.timestamp + 1 hours;
+        ReputationRegistry.SignedAttestInput[] memory inputs =
+            new ReputationRegistry.SignedAttestInput[](2);
+        inputs[0] = _signed(
+            bobKey, bob, alice, ReputationRegistry.Category.Overall, 80, 0, goodDeadline
+        );
+        inputs[1] = _signed(
+            carolKey, carol, dave, ReputationRegistry.Category.Overall, 90, 0, badDeadline
+        );
+        vm.warp(badDeadline + 1);
+        vm.expectRevert(ReputationRegistry.ExpiredSignature.selector);
+        registry.attestBatchBySignature(inputs);
+        assertEq(registry.attestationCount(), 0);
+        assertEq(registry.nonces(bob), 0);
+    }
 }
