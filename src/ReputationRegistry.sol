@@ -201,6 +201,49 @@ contract ReputationRegistry {
         }
     }
 
+    /// @notice Submit an attestation signed off-chain by the attester.
+    ///         Anyone may relay it; the recovered signer IS the attester,
+    ///         so the usual guards (self-attestation, score range, disputed
+    ///         records) still apply inside `_attest`. The nonce is consumed
+    ///         before the call, so a signature can never be replayed — even
+    ///         a signature for an attestation that reverts still burns its
+    ///         nonce, exactly like a mined transaction's nonce.
+    function attestBySignature(
+        address attester,
+        address subject,
+        Category category,
+        uint8 score,
+        bytes32 commentHash,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 id) {
+        if (block.timestamp > deadline) revert ExpiredSignature();
+        uint256 nonce = nonces[attester];
+        bytes32 structHash = keccak256(
+            abi.encode(
+                ATTEST_TYPEHASH,
+                attester,
+                subject,
+                category,
+                score,
+                commentHash,
+                nonce,
+                deadline
+            )
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+        address recovered = ecrecover(digest, v, r, s);
+        if (recovered == address(0) || recovered != attester) {
+            revert InvalidSignature();
+        }
+        nonces[attester] = nonce + 1;
+        return _attest(attester, subject, category, score, commentHash);
+    }
+
     function _attest(
         address attester,
         address subject,
