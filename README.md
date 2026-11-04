@@ -11,6 +11,7 @@ that travel with the worker, not the platform.
 - [x] Invariant fuzz tests + gas report
 - [x] Integrator ergonomics (batch attestation, paginated reads, profile view)
 - [x] Signed attestations (EIP-712, relayer-submitted, nonce replay protection)
+- [x] Attester reads (per-attester index, paginated records, track-record stats)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -104,6 +105,16 @@ relayer (a platform backend, a friend) submits it:
   without burning the nonce. All the usual guards still apply inside
   `attest` — a signed self-attestation or an out-of-range score reverts,
   and a signed re-attestation updates the existing record in place.
+
+### Attester reads
+
+- `getAttestationsByAttester(attester, offset, limit)` — paginated audit
+  view of what one client has endorsed, with the same empty-page
+  semantics as the subject-side pagination. Updates do not add records,
+  so the index counts attestations, not writes.
+- `attesterStats(attester)` — `{given, active, revoked, disputed}`: the
+  attester's track record. A client deciding whether to trust an
+  endorsement can weigh the attester, not just the score.
 
 ### Example flow
 
