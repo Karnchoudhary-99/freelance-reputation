@@ -79,6 +79,8 @@ contract ReputationRegistry {
     error NotDisputed();
     error DisputeNotExpired();
     error UnknownAttestation();
+    error ExpiredSignature();
+    error InvalidSignature();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -132,6 +134,34 @@ contract ReputationRegistry {
     ///         subject may reinstate the attestation unilaterally.
     uint256 public constant DISPUTE_WINDOW = 30 days;
 
+    /// @notice EIP-712 type hash for a signed attestation. The attester
+    ///         signs off-chain (e.g. from a mobile wallet) and anyone —
+    ///         a relayer, a platform backend — may submit it on-chain.
+    bytes32 public constant ATTEST_TYPEHASH =
+        keccak256(
+            "Attest(address attester,address subject,uint8 category,uint8 score,bytes32 commentHash,uint256 nonce,uint256 deadline)"
+        );
+
+    /// @notice EIP-712 domain separator, fixed at deploy time.
+    bytes32 public immutable DOMAIN_SEPARATOR;
+
+    /// @notice Next usable nonce per attester (replay protection).
+    mapping(address => uint256) public nonces;
+
+    constructor() {
+        DOMAIN_SEPARATOR = keccak256(
+            abi.encode(
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
+                keccak256(bytes("ReputationRegistry")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
     Attestation[] private _attestations;
     // subject => attestation ids (all, including revoked)
     mapping(address => uint256[]) private _subjectAttestations;
@@ -169,6 +199,65 @@ contract ReputationRegistry {
                 inputs[i].commentHash
             );
         }
+    }
+
+    /// @notice Submit an attestation signed off-chain by the attester.
+    ///         Anyone may relay it; the recovered signer IS the attester,
+    ///         so the usual guards (self-attestation, score range, disputed
+    ///         records) still apply inside `_attest`. The nonce is consumed
+    ///         before the call, so a signature can never be replayed — even
+    ///         a signature for an attestation that reverts still burns its
+    ///         nonce, exactly like a mined transaction's nonce.
+    function attestBySignature(
+        address attester,
+        address subject,
+        Category category,
+        uint8 score,
+        bytes32 commentHash,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 id) {
+        if (block.timestamp > deadline) revert ExpiredSignature();
+        uint256 nonce = nonces[attester];
+        address recovered = ecrecover(
+            _attestDigest(attester, subject, category, score, commentHash, nonce, deadline),
+            v,
+            r,
+            s
+        );
+        if (recovered == address(0) || recovered != attester) {
+            revert InvalidSignature();
+        }
+        nonces[attester] = nonce + 1;
+        return _attest(attester, subject, category, score, commentHash);
+    }
+
+    /// @notice EIP-712 digest for a signed attestation (extracted so the
+    ///         caller stays under the stack limit).
+    function _attestDigest(
+        address attester,
+        address subject,
+        Category category,
+        uint8 score,
+        bytes32 commentHash,
+        uint256 nonce,
+        uint256 deadline
+    ) internal view returns (bytes32) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                ATTEST_TYPEHASH,
+                attester,
+                subject,
+                category,
+                score,
+                commentHash,
+                nonce,
+                deadline
+            )
+        );
+        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
     }
 
     function _attest(

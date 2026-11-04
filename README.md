@@ -10,6 +10,7 @@ that travel with the worker, not the platform.
 - [x] Decay + dispute handling
 - [x] Invariant fuzz tests + gas report
 - [x] Integrator ergonomics (batch attestation, paginated reads, profile view)
+- [x] Signed attestations (EIP-712, relayer-submitted, nonce replay protection)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -88,6 +89,21 @@ A freelancer who believes an attestation is unfair can challenge it:
   read grows linearly in gas with history.
 - `getProfile(subject)` — overall plus all four category scores in a
   single call, so an integrating frontend needs one RPC call, not five.
+
+### Signed attestations (EIP-712)
+
+A freelancer's client may not want to hold gas or call the contract
+directly — a mobile wallet can sign an attestation off-chain and any
+relayer (a platform backend, a friend) submits it:
+
+- `attestBySignature(attester, subject, category, score, commentHash, deadline, v, r, s)`
+  — the typed data is `Attest(address attester, address subject, uint8 category,
+  uint8 score, bytes32 commentHash, uint256 nonce, uint256 deadline)` under
+  domain `ReputationRegistry` version `1`. `nonces(attester)` is the next
+  usable nonce; a signature is single-use, and an expired deadline reverts
+  without burning the nonce. All the usual guards still apply inside
+  `attest` — a signed self-attestation or an out-of-range score reverts,
+  and a signed re-attestation updates the existing record in place.
 
 ### Example flow
 
