@@ -165,6 +165,9 @@ contract ReputationRegistry {
     Attestation[] private _attestations;
     // subject => attestation ids (all, including revoked)
     mapping(address => uint256[]) private _subjectAttestations;
+    // attester => attestation ids they created (updates do not add a second
+    // entry: the index tracks records, not writes)
+    mapping(address => uint256[]) private _attesterAttestations;
     // keccak256(attester, subject, category) => id + 1 (0 == none active)
     mapping(bytes32 => uint256) private _activeByKey;
 
@@ -307,6 +310,7 @@ contract ReputationRegistry {
             })
         );
         _subjectAttestations[subject].push(id);
+        _attesterAttestations[attester].push(id);
         _activeByKey[key] = id + 1;
         emit AttestationCreated(id, attester, subject, category, score, weight);
     }
