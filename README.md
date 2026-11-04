@@ -84,7 +84,7 @@ alice score = (60*3 + 90*1) / 4 = 67.50
 ### Run it
 
 ```sh
-forge test          # 18 tests
+forge test          # 22 tests
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 
