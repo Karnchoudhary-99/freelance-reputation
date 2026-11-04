@@ -34,4 +34,50 @@ contract AttesterReadsTest is Test {
         assertEq(recs[0].score, 90); // updated value, same record
         assertEq(recs[1].subject, carol);
     }
+
+    function testAttesterPaginationBounds() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 80, bytes32(0));
+        vm.prank(bob);
+        registry.attest(carol, ReputationRegistry.Category.Quality, 70, bytes32(0));
+        vm.prank(bob);
+        registry.attest(dave, ReputationRegistry.Category.Timeliness, 60, bytes32(0));
+
+        ReputationRegistry.Attestation[] memory page =
+            registry.getAttestationsByAttester(bob, 1, 1);
+        assertEq(page.length, 1);
+        assertEq(page[0].subject, carol);
+
+        // Limit clamps to the remainder.
+        page = registry.getAttestationsByAttester(bob, 2, 99);
+        assertEq(page.length, 1);
+        assertEq(page[0].subject, dave);
+
+        // Offset past the end returns an empty page, not a revert.
+        page = registry.getAttestationsByAttester(bob, 3, 10);
+        assertEq(page.length, 0);
+        page = registry.getAttestationsByAttester(alice, 0, 10);
+        assertEq(page.length, 0);
+    }
+
+    function testAttesterStatsCountsStates() public {
+        vm.prank(bob);
+        uint256 active = registry.attest(alice, ReputationRegistry.Category.Overall, 80, bytes32(0));
+        vm.prank(bob);
+        uint256 revoked = registry.attest(carol, ReputationRegistry.Category.Quality, 70, bytes32(0));
+        vm.prank(bob);
+        uint256 disputed = registry.attest(dave, ReputationRegistry.Category.Timeliness, 60, bytes32(0));
+        vm.prank(bob);
+        registry.revokeAttestation(revoked);
+        vm.prank(dave);
+        registry.disputeAttestation(disputed, bytes32("unfair"));
+
+        ReputationRegistry.AttesterStats memory st = registry.attesterStats(bob);
+        assertEq(st.given, 3);
+        assertEq(st.active, 1);
+        assertEq(st.revoked, 1);
+        assertEq(st.disputed, 1);
+        // Keep the compiler honest about which id is which.
+        assertEq(active, 0);
+    }
 }
