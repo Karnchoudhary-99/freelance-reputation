@@ -9,6 +9,7 @@ that travel with the worker, not the platform.
 - [x] Reputation registry (attestations, weighted scores, revocation)
 - [x] Decay + dispute handling
 - [x] Invariant fuzz tests + gas report
+- [x] Integrator ergonomics (batch attestation, paginated reads, profile view)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -72,6 +73,22 @@ A freelancer who believes an attestation is unfair can challenge it:
 - While a dispute is open, the attester cannot quietly overwrite the
   record with a fresh `attest` call; revoking it settles the dispute.
 
+### Integrator ergonomics
+
+- `attestBatch(inputs)` — attest many subjects/categories in one
+  transaction, the onboarding path for a platform migrating its
+  freelancer base. Atomic: any invalid entry reverts the whole batch,
+  so a caller never lands in a half-applied state. Entries for existing
+  active records update in place, exactly as `attest` would.
+- `getAttestationsPaginated(subject, offset, limit)` — one page of a
+  subject's records in creation order. The limit clamps to the
+  remainder and an offset past the end returns an empty page, so a
+  frontend pages until it gets an empty page. Prefer this over
+  `getAttestations` once a subject has many records: the unbounded
+  read grows linearly in gas with history.
+- `getProfile(subject)` — overall plus all four category scores in a
+  single call, so an integrating frontend needs one RPC call, not five.
+
 ### Example flow
 
 ```text
@@ -95,12 +112,12 @@ recomputed independently from the raw records, no duplicate active
 (attester, category) keys, and record ranges plus attestation totals.
 Baseline: 6 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 1,366,849 gas, 6,104 bytes runtime).
+per-function gas (deploy 1,724,969 gas, 7,760 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 28 tests (22 unit + 6 invariants)
+forge test          # 33 tests (27 unit + 6 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 

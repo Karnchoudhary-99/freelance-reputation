@@ -51,6 +51,24 @@ contract ReputationRegistry {
         uint256 effectiveWeight; // decay-adjusted weight, in basis points
     }
 
+    /// @notice One attestation input for a batch call.
+    struct AttestInput {
+        address subject;
+        Category category;
+        uint8 score;
+        bytes32 commentHash;
+    }
+
+    /// @notice Overall + per-category scores in a single read, so an
+    ///         integrating frontend needs one RPC call, not five.
+    struct Profile {
+        Score overall;
+        Score quality;
+        Score communication;
+        Score timeliness;
+        Score reliability;
+    }
+
     error ZeroAddress();
     error SelfAttestation();
     error InvalidScore();
@@ -129,12 +147,43 @@ contract ReputationRegistry {
         uint8 score,
         bytes32 commentHash
     ) external returns (uint256 id) {
+        return _attest(msg.sender, subject, category, score, commentHash);
+    }
+
+    /// @notice Attest many subjects/categories in one transaction — the
+    ///         onboarding path for a platform migrating its freelancer base.
+    ///         Atomic: any invalid entry (zero address, self-attestation,
+    ///         score > 100, disputed record) reverts the whole batch, so a
+    ///         caller never lands in a half-applied state. Existing active
+    ///         records are updated in place, exactly as `attest` would.
+    function attestBatch(
+        AttestInput[] calldata inputs
+    ) external returns (uint256[] memory ids) {
+        ids = new uint256[](inputs.length);
+        for (uint256 i = 0; i < inputs.length; i++) {
+            ids[i] = _attest(
+                msg.sender,
+                inputs[i].subject,
+                inputs[i].category,
+                inputs[i].score,
+                inputs[i].commentHash
+            );
+        }
+    }
+
+    function _attest(
+        address attester,
+        address subject,
+        Category category,
+        uint8 score,
+        bytes32 commentHash
+    ) internal returns (uint256 id) {
         if (subject == address(0)) revert ZeroAddress();
-        if (subject == msg.sender) revert SelfAttestation();
+        if (subject == attester) revert SelfAttestation();
         if (score > MAX_SCORE) revert InvalidScore();
 
-        uint8 weight = attesterWeight(msg.sender);
-        bytes32 key = _key(msg.sender, subject, category);
+        uint8 weight = attesterWeight(attester);
+        bytes32 key = _key(attester, subject, category);
         uint256 existing = _activeByKey[key];
 
         if (existing != 0) {
@@ -147,14 +196,14 @@ contract ReputationRegistry {
             a.weight = weight;
             a.commentHash = commentHash;
             a.updatedAt = uint64(block.timestamp);
-            emit AttestationUpdated(id, msg.sender, subject, category, score, weight);
+            emit AttestationUpdated(id, attester, subject, category, score, weight);
             return id;
         }
 
         id = _attestations.length;
         _attestations.push(
             Attestation({
-                attester: msg.sender,
+                attester: attester,
                 subject: subject,
                 category: category,
                 score: score,
@@ -170,7 +219,7 @@ contract ReputationRegistry {
         );
         _subjectAttestations[subject].push(id);
         _activeByKey[key] = id + 1;
-        emit AttestationCreated(id, msg.sender, subject, category, score, weight);
+        emit AttestationCreated(id, attester, subject, category, score, weight);
     }
 
     /// @notice Revoke your own attestation. The record stays readable but no
@@ -272,6 +321,41 @@ contract ReputationRegistry {
             out[i] = _attestations[ids[i]];
         }
         return out;
+    }
+
+    /// @notice One page of a subject's attestations, in creation order
+    ///         (oldest first); callers paginate by offset.
+    ///         `limit` is clamped to the remaining records, and an offset
+    ///         past the end returns an empty array instead of reverting,
+    ///         so a frontend can page until it gets an empty page. Prefer
+    ///         this over `getAttestations` once a subject has many records:
+    ///         the unbounded read grows linearly in gas with history.
+    function getAttestationsPaginated(
+        address subject,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (Attestation[] memory) {
+        uint256[] storage ids = _subjectAttestations[subject];
+        if (offset >= ids.length) return new Attestation[](0);
+        uint256 remaining = ids.length - offset;
+        uint256 count = limit < remaining ? limit : remaining;
+        Attestation[] memory out = new Attestation[](count);
+        for (uint256 i = 0; i < count; i++) {
+            out[i] = _attestations[ids[offset + i]];
+        }
+        return out;
+    }
+
+    /// @notice Overall + all four category scores in one call.
+    function getProfile(
+        address subject
+    ) external view returns (Profile memory profile) {
+        uint256[] storage ids = _subjectAttestations[subject];
+        profile.overall = _score(ids, Category.Overall, false);
+        profile.quality = _score(ids, Category.Quality, true);
+        profile.communication = _score(ids, Category.Communication, true);
+        profile.timeliness = _score(ids, Category.Timeliness, true);
+        profile.reliability = _score(ids, Category.Reliability, true);
     }
 
     function attestation(uint256 id) external view returns (Attestation memory) {

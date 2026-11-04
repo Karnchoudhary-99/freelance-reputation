@@ -384,4 +384,95 @@ contract ReputationRegistryTest is Test {
         assertEq(registry.getScoreByCategory(alice, ReputationRegistry.Category.Timeliness).average, 5000);
         assertEq(registry.getScoreByCategory(alice, ReputationRegistry.Category.Reliability).count, 0);
     }
+
+    function testBatchAttestsManyAndUpdatesInPlace() public {
+        ReputationRegistry.AttestInput[] memory inputs = new ReputationRegistry.AttestInput[](3);
+        inputs[0] = ReputationRegistry.AttestInput(alice, ReputationRegistry.Category.Quality, 90, bytes32("b1"));
+        inputs[1] = ReputationRegistry.AttestInput(alice, ReputationRegistry.Category.Timeliness, 70, bytes32("b2"));
+        inputs[2] = ReputationRegistry.AttestInput(carol, ReputationRegistry.Category.Quality, 80, bytes32("b3"));
+
+        vm.prank(bob);
+        uint256[] memory ids = registry.attestBatch(inputs);
+        assertEq(ids.length, 3);
+        assertEq(ids[0], 0);
+        assertEq(ids[1], 1);
+        assertEq(ids[2], 2);
+        assertEq(registry.getScore(alice).average, 8000);
+        assertEq(registry.getScore(carol).average, 8000);
+
+        // A batch entry for an existing active record updates it, no new id.
+        ReputationRegistry.AttestInput[] memory update = new ReputationRegistry.AttestInput[](1);
+        update[0] = ReputationRegistry.AttestInput(alice, ReputationRegistry.Category.Quality, 100, bytes32("b4"));
+        vm.prank(bob);
+        uint256[] memory updated = registry.attestBatch(update);
+        assertEq(updated[0], 0);
+        assertEq(registry.attestationCount(), 3);
+        assertEq(registry.getScore(alice).average, 8500);
+    }
+
+    function testBatchIsAtomicOnBadEntry() public {
+        ReputationRegistry.AttestInput[] memory inputs = new ReputationRegistry.AttestInput[](2);
+        inputs[0] = ReputationRegistry.AttestInput(alice, ReputationRegistry.Category.Quality, 90, bytes32(0));
+        inputs[1] = ReputationRegistry.AttestInput(alice, ReputationRegistry.Category.Timeliness, 101, bytes32(0));
+
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.InvalidScore.selector);
+        registry.attestBatch(inputs);
+        // Nothing from the batch landed: no partial state.
+        assertEq(registry.attestationCount(), 0);
+        assertEq(registry.getScore(alice).count, 0);
+    }
+
+    function testBatchEmptyIsNoop() public {
+        ReputationRegistry.AttestInput[] memory inputs = new ReputationRegistry.AttestInput[](0);
+        vm.prank(bob);
+        uint256[] memory ids = registry.attestBatch(inputs);
+        assertEq(ids.length, 0);
+        assertEq(registry.attestationCount(), 0);
+    }
+
+    function testPaginatedReads() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Quality, 90, bytes32("p1"));
+        vm.prank(carol);
+        registry.attest(alice, ReputationRegistry.Category.Timeliness, 70, bytes32("p2"));
+        vm.prank(dave);
+        registry.attest(alice, ReputationRegistry.Category.Reliability, 50, bytes32("p3"));
+
+        ReputationRegistry.Attestation[] memory page = registry.getAttestationsPaginated(alice, 1, 2);
+        assertEq(page.length, 2);
+        assertEq(page[0].score, 70);
+        assertEq(page[1].score, 50);
+
+        // Limit clamps to the remainder instead of reverting.
+        page = registry.getAttestationsPaginated(alice, 2, 99);
+        assertEq(page.length, 1);
+        assertEq(page[0].score, 50);
+
+        // Offset past the end is an empty page, not a revert.
+        page = registry.getAttestationsPaginated(alice, 3, 10);
+        assertEq(page.length, 0);
+        page = registry.getAttestationsPaginated(alice, 99, 10);
+        assertEq(page.length, 0);
+    }
+
+    function testProfileMatchesIndividualScores() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Quality, 100, bytes32(0));
+        vm.prank(carol);
+        registry.attest(alice, ReputationRegistry.Category.Timeliness, 50, bytes32(0));
+
+        ReputationRegistry.Profile memory p = registry.getProfile(alice);
+        assertEq(p.overall.average, 7500);
+        assertEq(p.overall.count, 2);
+        assertEq(p.quality.average, 10000);
+        assertEq(p.communication.count, 0);
+        assertEq(p.timeliness.average, 5000);
+        assertEq(p.reliability.count, 0);
+
+        // Empty profile is all zeros, matching the individual getters.
+        ReputationRegistry.Profile memory empty = registry.getProfile(dave);
+        assertEq(empty.overall.average, 0);
+        assertEq(empty.quality.count, 0);
+    }
 }
