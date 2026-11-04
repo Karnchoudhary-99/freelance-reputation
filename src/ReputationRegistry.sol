@@ -495,6 +495,51 @@ contract ReputationRegistry {
         }
     }
 
+    /// @notice Human-readable reputation tiers, from the overall score
+    ///         and the number of active attestations behind it. A single
+    ///         100 from a friend is not "Elite"; tiers require both a high
+    ///         average AND enough endorsements, so they cannot be gamed by
+    ///         one attestation. Decayed scores apply: an aged-out Elite
+    ///         falls back down the tiers.
+    enum Tier {
+        Unranked,
+        Emerging,
+        Established,
+        Trusted,
+        Elite
+    }
+
+    /// @notice Tier thresholds: (minimum average scaled by 100, minimum
+    ///         active attestations).
+    uint256 public constant TIER_ESTABLISHED_AVG = 6000;
+    uint256 public constant TIER_ESTABLISHED_COUNT = 3;
+    uint256 public constant TIER_TRUSTED_AVG = 7500;
+    uint256 public constant TIER_TRUSTED_COUNT = 5;
+    uint256 public constant TIER_ELITE_AVG = 9000;
+    uint256 public constant TIER_ELITE_COUNT = 10;
+
+    function tierOf(address subject) external view returns (Tier) {
+        Score memory s = _score(
+            _subjectAttestations[subject],
+            Category.Overall,
+            false
+        );
+        if (s.count == 0) return Tier.Unranked;
+        if (s.average >= TIER_ELITE_AVG && s.count >= TIER_ELITE_COUNT) {
+            return Tier.Elite;
+        }
+        if (s.average >= TIER_TRUSTED_AVG && s.count >= TIER_TRUSTED_COUNT) {
+            return Tier.Trusted;
+        }
+        if (
+            s.average >= TIER_ESTABLISHED_AVG &&
+            s.count >= TIER_ESTABLISHED_COUNT
+        ) {
+            return Tier.Established;
+        }
+        return Tier.Emerging;
+    }
+
     /// @notice Overall + all four category scores in one call.
     function getProfile(
         address subject
