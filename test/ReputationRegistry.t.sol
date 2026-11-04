@@ -203,6 +203,124 @@ contract ReputationRegistryTest is Test {
         assertEq(registry.getScore(alice).average, 5000);
     }
 
+    function testDisputeExcludesFromScoreUntilUpheld() public {
+        vm.prank(bob);
+        uint256 id = registry.attest(alice, ReputationRegistry.Category.Overall, 20, bytes32(0));
+        vm.prank(carol);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 100, bytes32(0));
+        assertEq(registry.getScore(alice).average, 6000);
+
+        vm.prank(alice);
+        registry.disputeAttestation(id, bytes32("unfair"));
+        ReputationRegistry.Attestation memory a = registry.attestation(id);
+        assertTrue(a.disputed);
+        assertEq(a.disputeReason, bytes32("unfair"));
+        // Only carol's 100 counts while disputed.
+        assertEq(registry.getScore(alice).average, 10000);
+        assertEq(registry.getScore(alice).count, 1);
+
+        vm.prank(bob);
+        registry.resolveDispute(id, true);
+        assertFalse(registry.attestation(id).disputed);
+        assertEq(registry.getScore(alice).average, 6000);
+    }
+
+    function testDisputeConcedeRevokes() public {
+        vm.prank(bob);
+        uint256 id = registry.attest(alice, ReputationRegistry.Category.Overall, 20, bytes32(0));
+        vm.prank(alice);
+        registry.disputeAttestation(id, bytes32(0));
+        vm.prank(bob);
+        registry.resolveDispute(id, false);
+        ReputationRegistry.Attestation memory a = registry.attestation(id);
+        assertTrue(a.revoked);
+        assertFalse(a.disputed);
+        assertEq(registry.getScore(alice).count, 0);
+        // After conceding, bob may attest alice again as a fresh record.
+        vm.prank(bob);
+        uint256 fresh = registry.attest(alice, ReputationRegistry.Category.Overall, 90, bytes32(0));
+        assertEq(fresh, 1);
+    }
+
+    function testDisputeGuards() public {
+        vm.prank(bob);
+        uint256 id = registry.attest(alice, ReputationRegistry.Category.Overall, 20, bytes32(0));
+
+        // Only the subject may dispute.
+        vm.prank(carol);
+        vm.expectRevert(ReputationRegistry.NotSubject.selector);
+        registry.disputeAttestation(id, bytes32(0));
+
+        // Only the attester may resolve.
+        vm.prank(alice);
+        registry.disputeAttestation(id, bytes32(0));
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.NotAttester.selector);
+        registry.resolveDispute(id, true);
+
+        // No double dispute, no re-attest while disputed.
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.AlreadyDisputed.selector);
+        registry.disputeAttestation(id, bytes32(0));
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.AlreadyDisputed.selector);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 50, bytes32(0));
+
+        // Expiry too early, and resolve on a non-disputed record.
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.DisputeNotExpired.selector);
+        registry.expireDispute(id);
+        vm.prank(bob);
+        registry.resolveDispute(id, true);
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.NotDisputed.selector);
+        registry.resolveDispute(id, true);
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.NotDisputed.selector);
+        registry.expireDispute(id);
+
+        // Revoking a disputed record settles the dispute.
+        vm.prank(alice);
+        registry.disputeAttestation(id, bytes32(0));
+        vm.prank(bob);
+        registry.revokeAttestation(id);
+        assertTrue(registry.attestation(id).revoked);
+        assertFalse(registry.attestation(id).disputed);
+    }
+
+    function testDisputeExpiryReinstatesAfterWindow() public {
+        vm.prank(bob);
+        uint256 id = registry.attest(alice, ReputationRegistry.Category.Overall, 20, bytes32(0));
+        vm.prank(alice);
+        registry.disputeAttestation(id, bytes32(0));
+        assertEq(registry.getScore(alice).count, 0);
+
+        vm.warp(block.timestamp + 29 days);
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.DisputeNotExpired.selector);
+        registry.expireDispute(id);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(alice);
+        registry.expireDispute(id);
+        assertFalse(registry.attestation(id).disputed);
+        assertEq(registry.getScore(alice).average, 2000);
+    }
+
+    function testUpholdRefreshesDecayClock() public {
+        vm.prank(bob);
+        uint256 id = registry.attest(alice, ReputationRegistry.Category.Overall, 0, bytes32(0));
+        vm.warp(block.timestamp + 200 days); // bob's record now half-weight
+        vm.prank(alice);
+        registry.disputeAttestation(id, bytes32(0));
+        vm.prank(bob);
+        registry.resolveDispute(id, true); // re-confirmation: fresh clock
+        vm.prank(carol);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 100, bytes32(0));
+        // Both full weight after uphold: (0 + 100) / 2 = 50.00.
+        assertEq(registry.getScore(alice).average, 5000);
+    }
+
     function testCategoryScoreFilters() public {
         vm.prank(bob);
         registry.attest(alice, ReputationRegistry.Category.Quality, 100, bytes32(0));
