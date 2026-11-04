@@ -165,6 +165,9 @@ contract ReputationRegistry {
     Attestation[] private _attestations;
     // subject => attestation ids (all, including revoked)
     mapping(address => uint256[]) private _subjectAttestations;
+    // attester => attestation ids they created (updates do not add a second
+    // entry: the index tracks records, not writes)
+    mapping(address => uint256[]) private _attesterAttestations;
     // keccak256(attester, subject, category) => id + 1 (0 == none active)
     mapping(bytes32 => uint256) private _activeByKey;
 
@@ -307,6 +310,7 @@ contract ReputationRegistry {
             })
         );
         _subjectAttestations[subject].push(id);
+        _attesterAttestations[attester].push(id);
         _activeByKey[key] = id + 1;
         emit AttestationCreated(id, attester, subject, category, score, weight);
     }
@@ -433,6 +437,62 @@ contract ReputationRegistry {
             out[i] = _attestations[ids[offset + i]];
         }
         return out;
+    }
+
+    /// @notice How many records an attester has created (updates excluded).
+    function attesterAttestationCount(
+        address attester
+    ) external view returns (uint256) {
+        return _attesterAttestations[attester].length;
+    }
+
+    /// @notice One page of an attester's records, in creation order, with
+    ///         the same empty-page-past-the-end semantics as
+    ///         `getAttestationsPaginated` — the audit view for "what has
+    ///         this client endorsed, and what did they later revoke?".
+    function getAttestationsByAttester(
+        address attester,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (Attestation[] memory) {
+        uint256[] storage ids = _attesterAttestations[attester];
+        if (offset >= ids.length) return new Attestation[](0);
+        uint256 remaining = ids.length - offset;
+        uint256 count = limit < remaining ? limit : remaining;
+        Attestation[] memory out = new Attestation[](count);
+        for (uint256 i = 0; i < count; i++) {
+            out[i] = _attestations[ids[offset + i]];
+        }
+        return out;
+    }
+
+    /// @notice An attester's track record, computed from their index: how
+    ///         many attestations they gave, how many are still active, how
+    ///         many they revoked, and how many are currently disputed.
+    ///         A client deciding whether to trust an endorsement can weigh
+    ///         the attester, not just the score.
+    struct AttesterStats {
+        uint256 given;
+        uint256 active;
+        uint256 revoked;
+        uint256 disputed;
+    }
+
+    function attesterStats(
+        address attester
+    ) external view returns (AttesterStats memory stats) {
+        uint256[] storage ids = _attesterAttestations[attester];
+        stats.given = ids.length;
+        for (uint256 i = 0; i < ids.length; i++) {
+            Attestation storage a = _attestations[ids[i]];
+            if (a.revoked) {
+                stats.revoked++;
+            } else if (a.disputed) {
+                stats.disputed++;
+            } else {
+                stats.active++;
+            }
+        }
     }
 
     /// @notice Overall + all four category scores in one call.
