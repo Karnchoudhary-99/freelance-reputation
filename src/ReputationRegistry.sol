@@ -12,6 +12,14 @@ pragma solidity 0.8.24;
 ///      updates the existing record instead of stacking a second one.
 ///      Revoked attestations stay on-chain for auditability but are excluded
 ///      from every score. Averages are scaled by 100 (8750 == 87.50).
+///      Scores decay with age: an attestation counts fully for its first 90
+///      days, at half weight for the rest of its first year, and at quarter
+///      weight after that. The decay clock runs from the last update, so a
+///      re-attestation refreshes an endorsement; attester weights are read
+///      from the same decayed average. A subject may dispute an attestation
+///      they believe is unfair; disputed attestations are excluded from
+///      scores until the attester upholds them, concedes (revokes), or the
+///      30-day dispute window lapses and the subject reinstates them.
 contract ReputationRegistry {
     enum Category {
         Overall,
@@ -31,19 +39,27 @@ contract ReputationRegistry {
         uint64 createdAt;
         uint64 updatedAt;
         bool revoked;
+        bool disputed;
+        bytes32 disputeReason; // keccak256 of off-chain dispute text, or 0
+        uint64 disputedAt;
     }
 
     struct Score {
         uint256 average; // scaled by 100, 0 when count == 0
         uint256 count; // active attestations included
-        uint256 totalWeight;
+        uint256 totalWeight; // raw snapshot weights, before decay
+        uint256 effectiveWeight; // decay-adjusted weight, in basis points
     }
 
     error ZeroAddress();
     error SelfAttestation();
     error InvalidScore();
     error NotAttester();
+    error NotSubject();
     error AlreadyRevoked();
+    error AlreadyDisputed();
+    error NotDisputed();
+    error DisputeNotExpired();
     error UnknownAttestation();
 
     event AttestationCreated(
@@ -67,9 +83,36 @@ contract ReputationRegistry {
         address indexed attester,
         address indexed subject
     );
+    event DisputeRaised(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject
+    );
+    event DisputeResolved(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject,
+        bool upheld
+    );
+    event DisputeExpired(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject
+    );
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
+
+    /// @notice Decay tiers, in basis points of the snapshot weight.
+    uint256 public constant DECAY_FULL_BPS = 10000; // first 90 days
+    uint256 public constant DECAY_HALF_BPS = 5000; // rest of year one
+    uint256 public constant DECAY_QUARTER_BPS = 2500; // after one year
+    uint256 public constant DECAY_FULL_PERIOD = 90 days;
+    uint256 public constant DECAY_HALF_PERIOD = 365 days;
+
+    /// @notice How long an attester has to answer a dispute before the
+    ///         subject may reinstate the attestation unilaterally.
+    uint256 public constant DISPUTE_WINDOW = 30 days;
 
     Attestation[] private _attestations;
     // subject => attestation ids (all, including revoked)
@@ -97,6 +140,9 @@ contract ReputationRegistry {
         if (existing != 0) {
             id = existing - 1;
             Attestation storage a = _attestations[id];
+            // A disputed attestation cannot be quietly overwritten by the
+            // attester; it must go through resolveDispute first.
+            if (a.disputed) revert AlreadyDisputed();
             a.score = score;
             a.weight = weight;
             a.commentHash = commentHash;
@@ -116,7 +162,10 @@ contract ReputationRegistry {
                 commentHash: commentHash,
                 createdAt: uint64(block.timestamp),
                 updatedAt: uint64(block.timestamp),
-                revoked: false
+                revoked: false,
+                disputed: false,
+                disputeReason: bytes32(0),
+                disputedAt: 0
             })
         );
         _subjectAttestations[subject].push(id);
@@ -133,8 +182,70 @@ contract ReputationRegistry {
         if (a.attester != msg.sender) revert NotAttester();
         if (a.revoked) revert AlreadyRevoked();
         a.revoked = true;
+        // Revoking also settles any open dispute on this record.
+        a.disputed = false;
+        a.disputeReason = bytes32(0);
+        a.disputedAt = 0;
         _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         emit AttestationRevoked(id, msg.sender, a.subject);
+    }
+
+    /// @notice Dispute an attestation about you. Only the subject may
+    ///         dispute, only while the attestation is active, and only once
+    ///         at a time. While disputed it is excluded from every score.
+    function disputeAttestation(uint256 id, bytes32 reasonHash) external {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        Attestation storage a = _attestations[id];
+        if (a.subject != msg.sender) revert NotSubject();
+        if (a.revoked) revert AlreadyRevoked();
+        if (a.disputed) revert AlreadyDisputed();
+        a.disputed = true;
+        a.disputeReason = reasonHash;
+        a.disputedAt = uint64(block.timestamp);
+        emit DisputeRaised(id, a.attester, a.subject);
+    }
+
+    /// @notice Resolve a dispute over your attestation. Upholding clears the
+    ///         dispute (and refreshes the decay clock: the attestation is
+    ///         re-confirmed); conceding revokes the attestation, freeing the
+    ///         subject to be re-attested later.
+    function resolveDispute(uint256 id, bool uphold) external {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        Attestation storage a = _attestations[id];
+        if (a.attester != msg.sender) revert NotAttester();
+        if (!a.disputed) revert NotDisputed();
+        if (uphold) {
+            a.disputed = false;
+            a.disputeReason = bytes32(0);
+            a.disputedAt = 0;
+            a.updatedAt = uint64(block.timestamp);
+        } else {
+            a.revoked = true;
+            a.disputed = false;
+            a.disputeReason = bytes32(0);
+            a.disputedAt = 0;
+            _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
+        }
+        emit DisputeResolved(id, a.attester, a.subject, uphold);
+    }
+
+    /// @notice Reinstate an attestation whose dispute went unanswered for the
+    ///         full dispute window. Only the subject may call this: it stops
+    ///         an attester from suppressing a score forever by ignoring the
+    ///         dispute. The decay clock is NOT refreshed — expiry is not a
+    ///         re-confirmation.
+    function expireDispute(uint256 id) external {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        Attestation storage a = _attestations[id];
+        if (a.subject != msg.sender) revert NotSubject();
+        if (!a.disputed) revert NotDisputed();
+        if (block.timestamp < uint256(a.disputedAt) + DISPUTE_WINDOW) {
+            revert DisputeNotExpired();
+        }
+        a.disputed = false;
+        a.disputeReason = bytes32(0);
+        a.disputedAt = 0;
+        emit DisputeExpired(id, a.attester, a.subject);
     }
 
     /// @notice Weighted average score across all active attestations.
@@ -172,8 +283,18 @@ contract ReputationRegistry {
         return _attestations.length;
     }
 
+    /// @notice Decay factor (basis points) for an attestation last updated
+    ///         at `timestamp`, measured against the current block time.
+    function decayFactorBps(uint64 timestamp) public view returns (uint256) {
+        if (block.timestamp <= timestamp) return DECAY_FULL_BPS;
+        uint256 age = block.timestamp - timestamp;
+        if (age < DECAY_FULL_PERIOD) return DECAY_FULL_BPS;
+        if (age < DECAY_HALF_PERIOD) return DECAY_HALF_BPS;
+        return DECAY_QUARTER_BPS;
+    }
+
     /// @notice Weight this attester's next attestation would carry, from their
-    ///         own current average: <50 -> 1, 50-79 -> 2, >=80 -> 3.
+    ///         own current (decayed) average: <50 -> 1, 50-79 -> 2, >=80 -> 3.
     function attesterWeight(address attester) public view returns (uint8) {
         Score memory s = _score(_subjectAttestations[attester], Category.Overall, false);
         if (s.average >= 8000) return 3;
@@ -190,13 +311,19 @@ contract ReputationRegistry {
         for (uint256 i = 0; i < ids.length; i++) {
             Attestation storage a = _attestations[ids[i]];
             if (a.revoked) continue;
+            if (a.disputed) continue;
             if (filterCategory && a.category != category) continue;
-            weightedSum += uint256(a.score) * uint256(a.weight);
+            // Fixed-point decay: multiply before dividing so a weight-1
+            // attestation at quarter weight still counts (2500 bps), instead
+            // of truncating to zero.
+            uint256 effective = uint256(a.weight) * decayFactorBps(a.updatedAt);
+            weightedSum += uint256(a.score) * effective;
+            result.effectiveWeight += effective;
             result.totalWeight += a.weight;
             result.count++;
         }
         if (result.count > 0) {
-            result.average = (weightedSum * 100) / result.totalWeight;
+            result.average = (weightedSum * 100) / result.effectiveWeight;
         }
     }
 
