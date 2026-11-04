@@ -79,6 +79,8 @@ contract ReputationRegistry {
     error NotDisputed();
     error DisputeNotExpired();
     error UnknownAttestation();
+    error ExpiredSignature();
+    error InvalidSignature();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -131,6 +133,34 @@ contract ReputationRegistry {
     /// @notice How long an attester has to answer a dispute before the
     ///         subject may reinstate the attestation unilaterally.
     uint256 public constant DISPUTE_WINDOW = 30 days;
+
+    /// @notice EIP-712 type hash for a signed attestation. The attester
+    ///         signs off-chain (e.g. from a mobile wallet) and anyone —
+    ///         a relayer, a platform backend — may submit it on-chain.
+    bytes32 public constant ATTEST_TYPEHASH =
+        keccak256(
+            "Attest(address attester,address subject,uint8 category,uint8 score,bytes32 commentHash,uint256 nonce,uint256 deadline)"
+        );
+
+    /// @notice EIP-712 domain separator, fixed at deploy time.
+    bytes32 public immutable DOMAIN_SEPARATOR;
+
+    /// @notice Next usable nonce per attester (replay protection).
+    mapping(address => uint256) public nonces;
+
+    constructor() {
+        DOMAIN_SEPARATOR = keccak256(
+            abi.encode(
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
+                keccak256(bytes("ReputationRegistry")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
 
     Attestation[] private _attestations;
     // subject => attestation ids (all, including revoked)
