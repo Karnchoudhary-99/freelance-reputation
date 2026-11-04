@@ -59,6 +59,20 @@ contract ReputationRegistry {
         bytes32 commentHash;
     }
 
+    /// @notice One signed attestation input for a relayed batch call: the
+    ///         same fields as a signed attestation, plus the signature.
+    struct SignedAttestInput {
+        address attester;
+        address subject;
+        Category category;
+        uint8 score;
+        bytes32 commentHash;
+        uint256 deadline;
+        uint8 v;
+        bytes32 r;
+        bytes32 s;
+    }
+
     /// @notice Overall + per-category scores in a single read, so an
     ///         integrating frontend needs one RPC call, not five.
     struct Profile {
