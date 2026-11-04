@@ -141,6 +141,19 @@ Both conditions must hold: nine perfect attestations are Trusted, not
 Elite, and a single 100 is only Emerging. Tiers read the decayed score,
 so an aged-out reputation falls back down the tiers.
 
+### Leaderboard
+
+`getLeaderboard(limit)` ranks subjects by decayed overall average,
+highest first, with one row per subject — `{subject, average, count,
+tier}` — so a marketplace can show "top freelancers" in a single call.
+Ties break toward more active attestations, then toward the subject
+seen first, so the ranking is deterministic. Subjects with no active
+attestations (all revoked, or all disputed) are excluded, and `limit`
+clamps to the ranked set (0 returns an empty array). `subjectCount()`
+reports how many distinct subjects have ever received an attestation.
+The view scans the whole subject set, so keep `limit` small on a busy
+registry.
+
 ### Example flow
 
 ```text
@@ -169,7 +182,7 @@ per-function gas (deploy 1,724,969 gas, 7,760 bytes runtime).
 ### Run it
 
 ```sh
-forge test          # 53 tests (47 unit + 6 invariants)
+forge test          # 58 tests (52 unit + 6 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 

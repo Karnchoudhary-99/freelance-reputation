@@ -83,6 +83,15 @@ contract ReputationRegistry {
         Score reliability;
     }
 
+    /// @notice One leaderboard row: a subject's overall score plus tier,
+    ///         so a marketplace can rank freelancers in a single call.
+    struct LeaderboardEntry {
+        address subject;
+        uint256 average; // scaled by 100, same as Score.average
+        uint256 count; // active attestations included
+        Tier tier;
+    }
+
     error ZeroAddress();
     error SelfAttestation();
     error InvalidScore();
@@ -184,6 +193,12 @@ contract ReputationRegistry {
     mapping(address => uint256[]) private _attesterAttestations;
     // keccak256(attester, subject, category) => id + 1 (0 == none active)
     mapping(bytes32 => uint256) private _activeByKey;
+    // Every address that has ever received an attestation, in first-seen
+    // order (updates and re-attestations after revocation do not add a
+    // second entry). Powers the leaderboard; revoked/disputed-only
+    // subjects stay listed but rank with count 0 and are excluded.
+    address[] private _subjects;
+    mapping(address => bool) private _isSubject;
 
     /// @notice Attest a freelancer's work, or update your existing attestation
     ///         for the same subject + category.
@@ -373,6 +388,10 @@ contract ReputationRegistry {
         );
         _subjectAttestations[subject].push(id);
         _attesterAttestations[attester].push(id);
+        if (!_isSubject[subject]) {
+            _isSubject[subject] = true;
+            _subjects.push(subject);
+        }
         _activeByKey[key] = id + 1;
         emit AttestationCreated(id, attester, subject, category, score, weight);
     }
@@ -581,11 +600,13 @@ contract ReputationRegistry {
     uint256 public constant TIER_ELITE_COUNT = 10;
 
     function tierOf(address subject) external view returns (Tier) {
-        Score memory s = _score(
-            _subjectAttestations[subject],
-            Category.Overall,
-            false
-        );
+        return
+            _tierOf(
+                _score(_subjectAttestations[subject], Category.Overall, false)
+            );
+    }
+
+    function _tierOf(Score memory s) internal pure returns (Tier) {
         if (s.count == 0) return Tier.Unranked;
         if (s.average >= TIER_ELITE_AVG && s.count >= TIER_ELITE_COUNT) {
             return Tier.Elite;
@@ -612,6 +633,64 @@ contract ReputationRegistry {
         profile.communication = _score(ids, Category.Communication, true);
         profile.timeliness = _score(ids, Category.Timeliness, true);
         profile.reliability = _score(ids, Category.Reliability, true);
+    }
+
+    /// @notice How many distinct subjects have ever received an attestation
+    ///         (including subjects whose attestations are all revoked now).
+    function subjectCount() external view returns (uint256) {
+        return _subjects.length;
+    }
+
+    /// @notice Top subjects by overall average, highest first; ties break
+    ///         toward more active attestations, then toward the subject
+    ///         seen first (insertion sort is stable, so the ranking is
+    ///         deterministic). Subjects with no active attestations are
+    ///         excluded, and `limit` is clamped to the ranked set — a limit
+    ///         of 0 returns an empty array. This is a view over the whole
+    ///         subject set, so it grows linearly with registered subjects;
+    ///         frontends should page with a small limit on a busy registry.
+    function getLeaderboard(
+        uint256 limit
+    ) external view returns (LeaderboardEntry[] memory) {
+        LeaderboardEntry[] memory ranked = new LeaderboardEntry[](
+            _subjects.length
+        );
+        uint256 rankedCount;
+        for (uint256 i = 0; i < _subjects.length; i++) {
+            Score memory s = _score(
+                _subjectAttestations[_subjects[i]],
+                Category.Overall,
+                false
+            );
+            if (s.count == 0) continue;
+            ranked[rankedCount++] = LeaderboardEntry({
+                subject: _subjects[i],
+                average: s.average,
+                count: s.count,
+                tier: _tierOf(s)
+            });
+        }
+        // Insertion sort, descending by average, then by count.
+        for (uint256 i = 1; i < rankedCount; i++) {
+            LeaderboardEntry memory entry = ranked[i];
+            uint256 j = i;
+            while (
+                j > 0 &&
+                (ranked[j - 1].average < entry.average ||
+                    (ranked[j - 1].average == entry.average &&
+                        ranked[j - 1].count < entry.count))
+            ) {
+                ranked[j] = ranked[j - 1];
+                j--;
+            }
+            ranked[j] = entry;
+        }
+        uint256 outCount = limit < rankedCount ? limit : rankedCount;
+        LeaderboardEntry[] memory out = new LeaderboardEntry[](outCount);
+        for (uint256 i = 0; i < outCount; i++) {
+            out[i] = ranked[i];
+        }
+        return out;
     }
 
     function attestation(uint256 id) external view returns (Attestation memory) {
