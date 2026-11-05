@@ -652,6 +652,19 @@ contract ReputationRegistry {
     function getLeaderboard(
         uint256 limit
     ) external view returns (LeaderboardEntry[] memory) {
+        return _rankedLeaderboard(Category.Overall, false, limit);
+    }
+
+    /// @notice Shared ranking behind `getLeaderboard` and
+    ///         `getLeaderboardByCategory`: score every subject, drop the
+    ///         ones with no active attestations in scope, sort descending
+    ///         by average then count (stable, so first-seen order breaks
+    ///         remaining ties), and clamp to `limit`.
+    function _rankedLeaderboard(
+        Category category,
+        bool filterCategory,
+        uint256 limit
+    ) internal view returns (LeaderboardEntry[] memory) {
         LeaderboardEntry[] memory ranked = new LeaderboardEntry[](
             _subjects.length
         );
@@ -659,15 +672,27 @@ contract ReputationRegistry {
         for (uint256 i = 0; i < _subjects.length; i++) {
             Score memory s = _score(
                 _subjectAttestations[_subjects[i]],
-                Category.Overall,
-                false
+                category,
+                filterCategory
             );
             if (s.count == 0) continue;
+            // The tier is always the subject's OVERALL tier, even on a
+            // category board: a category average must not promote someone
+            // to Elite on the strength of one category alone.
+            Tier tier = filterCategory
+                ? _tierOf(
+                    _score(
+                        _subjectAttestations[_subjects[i]],
+                        Category.Overall,
+                        false
+                    )
+                )
+                : _tierOf(s);
             ranked[rankedCount++] = LeaderboardEntry({
                 subject: _subjects[i],
                 average: s.average,
                 count: s.count,
-                tier: _tierOf(s)
+                tier: tier
             });
         }
         // Insertion sort, descending by average, then by count.
