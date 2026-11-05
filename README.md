@@ -15,6 +15,7 @@ that travel with the worker, not the platform.
 - [x] Reputation tiers (Unranked → Elite, average-plus-count thresholds)
 - [x] Signed batch attestations (mixed-attester relayed batches, atomic)
 - [x] Discovery views (per-category leaderboards, tier directory)
+- [x] Score history (on-chain snapshots per state change, paginated reads)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -179,6 +180,33 @@ Both views read decayed scores, so a tier directory reflects
 reputation as it stands today, not as it stood when the
 attestations were fresh.
 
+### Score history
+
+Every state change — attest, re-attest, revoke, dispute raise,
+dispute resolve (uphold or concede), dispute expiry — appends a
+frozen snapshot of the subject's score to on-chain history, so a
+frontend can chart reputation over time without indexing events:
+
+- `scoreHistoryLength(subject, category)` — how many snapshots exist
+  for one scope (`Category.Overall` for the overall score, or one
+  specific category).
+- `getScoreHistory(subject, category, offset, limit)` — one page of
+  `{timestamp, average, count, effectiveWeight}` snapshots, oldest
+  first, with the same paging semantics as the attestation pagers
+  (`limit` clamps, an offset past the end returns an empty array).
+
+Each change records an Overall snapshot, plus a category-scoped one
+when the changed attestation belongs to a category — an attestation
+in `Category.Overall` records one snapshot only. Snapshots freeze
+the decayed score as it stood at that moment: a snapshot taken after
+a 400-day warp shows the first attestation at quarter weight. A
+revoke or a raised dispute appends a snapshot with the attestation
+excluded (average 0 when it was the only one), and an upheld dispute
+or an expiry appends one with the score restored. History grows by
+one entry per state change, so page it on busy subjects — and note
+that snapshots cost gas on every write (see `docs/gas-report.md`):
+reputation-over-time is a feature, not a free lunch.
+
 ### Example flow
 
 ```text
@@ -195,12 +223,15 @@ alice score = (60*3 + 90*1) / 4 = 67.50
 dispute / resolve / expire cycles plus time warps (crossing the 90-day
 and 365-day decay tiers and the 30-day dispute window) with a guarded
 handler, so every handler call is expected to succeed and a revert can
-never mask a broken invariant. Six invariants hold across every run:
+never mask a broken invariant. Seven invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
 recomputed independently from the raw records, no duplicate active
-(attester, category) keys, and record ranges plus attestation totals.
-Baseline: 6 invariants × 256 runs × depth 100 — 25,600 handler calls
+(attester, category) keys, record ranges plus attestation totals, and
+the latest score-history snapshot matching the live score whenever no
+time has passed since the last change touching that scope (a warp ages
+every attestation, so snapshots drift from live scores by design after
+one). Baseline: 7 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
 per-function gas (deploy 1,724,969 gas, 7,760 bytes runtime).
 

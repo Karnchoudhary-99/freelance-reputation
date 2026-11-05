@@ -92,6 +92,19 @@ contract ReputationRegistry {
         Tier tier;
     }
 
+    /// @notice One point in a subject's score history: the score as it
+    ///         stood right after a state change (attest, update, revoke,
+    ///         dispute raise/resolve/expire). A frontend can chart a
+    ///         freelancer's reputation over time without indexing events.
+    ///         `average`/`count`/`effectiveWeight` are the same fields as
+    ///         `Score`, frozen at `timestamp`.
+    struct ScoreSnapshot {
+        uint64 timestamp;
+        uint256 average; // scaled by 100, 0 when count == 0
+        uint256 count; // active attestations included
+        uint256 effectiveWeight; // decay-adjusted weight, in basis points
+    }
+
     error ZeroAddress();
     error SelfAttestation();
     error InvalidScore();
@@ -199,6 +212,11 @@ contract ReputationRegistry {
     // subjects stay listed but rank with count 0 and are excluded.
     address[] private _subjects;
     mapping(address => bool) private _isSubject;
+    // subject => category => snapshots, in chronological order. Every
+    // state change appends an Overall snapshot plus, when the changed
+    // attestation belongs to a specific category, one for that category.
+    mapping(address => mapping(Category => ScoreSnapshot[]))
+        private _scoreHistory;
 
     /// @notice Attest a freelancer's work, or update your existing attestation
     ///         for the same subject + category.
@@ -366,6 +384,7 @@ contract ReputationRegistry {
             a.commentHash = commentHash;
             a.updatedAt = uint64(block.timestamp);
             emit AttestationUpdated(id, attester, subject, category, score, weight);
+            _recordSnapshot(subject, category);
             return id;
         }
 
@@ -394,6 +413,35 @@ contract ReputationRegistry {
         }
         _activeByKey[key] = id + 1;
         emit AttestationCreated(id, attester, subject, category, score, weight);
+        _recordSnapshot(subject, category);
+    }
+
+    /// @notice Append a snapshot of the subject's current scores to
+    ///         history: always the Overall score, plus the changed
+    ///         category's score when the change touched one category.
+    ///         An attestation in `Category.Overall` records one snapshot
+    ///         only — the overall score already covers it.
+    function _recordSnapshot(address subject, Category category) internal {
+        uint256[] storage ids = _subjectAttestations[subject];
+        Score memory overall = _score(ids, Category.Overall, false);
+        _scoreHistory[subject][Category.Overall].push(
+            ScoreSnapshot({
+                timestamp: uint64(block.timestamp),
+                average: overall.average,
+                count: overall.count,
+                effectiveWeight: overall.effectiveWeight
+            })
+        );
+        if (category == Category.Overall) return;
+        Score memory scoped = _score(ids, category, true);
+        _scoreHistory[subject][category].push(
+            ScoreSnapshot({
+                timestamp: uint64(block.timestamp),
+                average: scoped.average,
+                count: scoped.count,
+                effectiveWeight: scoped.effectiveWeight
+            })
+        );
     }
 
     /// @notice Revoke your own attestation. The record stays readable but no
@@ -411,6 +459,7 @@ contract ReputationRegistry {
         a.disputedAt = 0;
         _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         emit AttestationRevoked(id, msg.sender, a.subject);
+        _recordSnapshot(a.subject, a.category);
     }
 
     /// @notice Dispute an attestation about you. Only the subject may
@@ -426,6 +475,7 @@ contract ReputationRegistry {
         a.disputeReason = reasonHash;
         a.disputedAt = uint64(block.timestamp);
         emit DisputeRaised(id, a.attester, a.subject);
+        _recordSnapshot(a.subject, a.category);
     }
 
     /// @notice Resolve a dispute over your attestation. Upholding clears the
@@ -450,6 +500,7 @@ contract ReputationRegistry {
             _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         }
         emit DisputeResolved(id, a.attester, a.subject, uphold);
+        _recordSnapshot(a.subject, a.category);
     }
 
     /// @notice Reinstate an attestation whose dispute went unanswered for the
@@ -469,6 +520,7 @@ contract ReputationRegistry {
         a.disputeReason = bytes32(0);
         a.disputedAt = 0;
         emit DisputeExpired(id, a.attester, a.subject);
+        _recordSnapshot(a.subject, a.category);
     }
 
     /// @notice Weighted average score across all active attestations.
@@ -482,6 +534,41 @@ contract ReputationRegistry {
         Category category
     ) external view returns (Score memory) {
         return _score(_subjectAttestations[subject], category, true);
+    }
+
+    /// @notice How many snapshots exist for a subject's score in one
+    ///         scope (`Category.Overall` for the overall score, or one
+    ///         specific category). Zero for a subject/category with no
+    ///         recorded changes.
+    function scoreHistoryLength(
+        address subject,
+        Category category
+    ) external view returns (uint256) {
+        return _scoreHistory[subject][category].length;
+    }
+
+    /// @notice One page of a subject's score history, oldest first — the
+    ///         data behind a reputation-over-time chart. Same paging
+    ///         semantics as `getAttestationsPaginated`: `limit` is clamped
+    ///         to the remaining snapshots and an offset past the end
+    ///         returns an empty array. History grows by one entry per
+    ///         state change (plus a category entry when the change touched
+    ///         one), so page it on busy subjects.
+    function getScoreHistory(
+        address subject,
+        Category category,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (ScoreSnapshot[] memory) {
+        ScoreSnapshot[] storage snapshots = _scoreHistory[subject][category];
+        if (offset >= snapshots.length) return new ScoreSnapshot[](0);
+        uint256 remaining = snapshots.length - offset;
+        uint256 count = limit < remaining ? limit : remaining;
+        ScoreSnapshot[] memory out = new ScoreSnapshot[](count);
+        for (uint256 i = 0; i < count; i++) {
+            out[i] = snapshots[offset + i];
+        }
+        return out;
     }
 
     /// @notice All attestations for a subject, revoked ones included
