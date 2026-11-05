@@ -756,6 +756,45 @@ contract ReputationRegistry {
         return out;
     }
 
+    /// @notice One page of a subject's attestations in ONE category,
+    ///         in creation order (oldest first) — the view behind "show
+    ///         me every Quality endorsement for this freelancer". Same
+    ///         paging semantics as `getAttestationsPaginated`: `limit`
+    ///         is clamped to the remaining records in the category and
+    ///         an offset past the end returns an empty array. Revoked
+    ///         and disputed records are included, like in
+    ///         `getAttestations` (check the flags to tell them apart).
+    ///         This is a view over the subject's full history, so it
+    ///         scans every record even when the page is small; frontends
+    ///         should call it off-chain via `eth_call`.
+    function getAttestationsByCategory(
+        address subject,
+        Category category,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (Attestation[] memory) {
+        uint256[] storage ids = _subjectAttestations[subject];
+        uint256 total;
+        for (uint256 i = 0; i < ids.length; i++) {
+            if (_attestations[ids[i]].category == category) total++;
+        }
+        if (offset >= total) return new Attestation[](0);
+        uint256 remaining = total - offset;
+        uint256 count = limit < remaining ? limit : remaining;
+        Attestation[] memory out = new Attestation[](count);
+        uint256 seen;
+        uint256 written;
+        for (uint256 i = 0; i < ids.length && written < count; i++) {
+            Attestation storage a = _attestations[ids[i]];
+            if (a.category != category) continue;
+            if (seen >= offset) {
+                out[written++] = a;
+            }
+            seen++;
+        }
+        return out;
+    }
+
     /// @notice How many records an attester has created (updates excluded).
     function attesterAttestationCount(
         address attester
