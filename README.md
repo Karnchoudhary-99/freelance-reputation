@@ -14,6 +14,7 @@ that travel with the worker, not the platform.
 - [x] Attester reads (per-attester index, paginated records, track-record stats)
 - [x] Reputation tiers (Unranked → Elite, average-plus-count thresholds)
 - [x] Signed batch attestations (mixed-attester relayed batches, atomic)
+- [x] Discovery views (per-category leaderboards, tier directory)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -153,6 +154,30 @@ clamps to the ranked set (0 returns an empty array). `subjectCount()`
 reports how many distinct subjects have ever received an attestation.
 The view scans the whole subject set, so keep `limit` small on a busy
 registry.
+
+### Discovery: category boards and tier directory
+
+Two more views sit on top of the same ranking, for marketplace
+discovery pages:
+
+- `getLeaderboardByCategory(category, limit)` — the "best
+  communicators" board: subjects ranked by one category's decayed
+  average, with the same tie-break, exclusion, and limit rules as the
+  overall board. `average` and `count` are category-scoped, but `tier`
+  stays the subject's overall tier — a category average alone never
+  promotes someone to Elite. Passing `Category.Overall` returns
+  exactly `getLeaderboard`, since the overall score already spans
+  every category.
+- `getSubjectsByTier(tier, limit)` — every subject currently in one
+  tier, in first-seen order (not score order), so a directory page
+  can list all Trusted freelancers. `limit` clamps like the boards,
+  and 0 returns an empty array. Querying `Unranked` includes subjects
+  whose attestations are all revoked or disputed now; subjects that
+  never received an attestation are not in the registry at all.
+
+Both views read decayed scores, so a tier directory reflects
+reputation as it stands today, not as it stood when the
+attestations were fresh.
 
 ### Example flow
 

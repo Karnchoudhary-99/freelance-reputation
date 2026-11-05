@@ -10,8 +10,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 1,724,969 gas |
-| Runtime size | 7,760 bytes |
+| Deployment cost | 2,851,666 gas |
+| Runtime size | 13,195 bytes |
 
 ## Function costs (gas)
 
@@ -26,7 +26,9 @@ not mainnet quotes.
 | `getScoreByCategory` (view) | 19,585 | 20,939 | 20,943 | 22,287 | 4 |
 | `attesterWeight` (view) | 2,956 | 15,648 | 14,944 | 21,854 | 7 |
 | `decayFactorBps` (view) | 443 | 566 | 596 | 597 | 6 |
-| `getLeaderboard` (view) | 3,059 | 36,357 | 32,682 | 59,948 | 10 |
+| `getLeaderboard` (view) | 3,134 | 38,865 | 40,049 | 60,143 | 13 |
+| `getLeaderboardByCategory` (view) | 37,595 | 71,288 | 70,897 | 128,692 | 6 |
+| `getSubjectsByTier` (view) | 43,910 | 171,066 | 207,085 | 207,858 | 9 |
 
 ## Reading the numbers
 
@@ -53,6 +55,13 @@ not mainnet quotes.
   measured 3–60k gas on the small boards in the test suite (up to 3
   subjects); it scans every registered subject, so on a busy registry
   it is a view for off-chain `eth_call`, not a transaction input.
+- **Discovery views cost more than the overall board:** a category
+  board scores every subject twice (once for the category average,
+  once for the overall tier on each row), and the tier directory
+  scores every subject's full history — 44–208k gas in the test
+  suite, where the tier test registers 6 subjects with up to 10
+  attestations each. Same conclusion: views for off-chain reads,
+  not transaction inputs.
 - **Invariant fuzz baseline:** `test/Invariant.t.sol` runs 6 invariants
   × 256 runs × depth 100 (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression

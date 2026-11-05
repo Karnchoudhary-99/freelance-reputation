@@ -635,6 +635,38 @@ contract ReputationRegistry {
         profile.reliability = _score(ids, Category.Reliability, true);
     }
 
+    /// @notice Every subject currently sitting in one tier, in first-seen
+    ///         order — the directory view behind "show me all Trusted
+    ///         freelancers". `limit` is clamped to the matching set and a
+    ///         limit of 0 returns an empty array, like the leaderboards.
+    ///         Querying `Tier.Unranked` includes subjects whose attestations
+    ///         are all revoked or disputed now (they still hold the tier,
+    ///         just with no active score behind it); subjects that never
+    ///         received an attestation are not in the registry at all.
+    function getSubjectsByTier(
+        Tier tier,
+        uint256 limit
+    ) external view returns (address[] memory) {
+        address[] memory matched = new address[](_subjects.length);
+        uint256 matchedCount;
+        for (uint256 i = 0; i < _subjects.length; i++) {
+            Score memory s = _score(
+                _subjectAttestations[_subjects[i]],
+                Category.Overall,
+                false
+            );
+            if (_tierOf(s) == tier) {
+                matched[matchedCount++] = _subjects[i];
+            }
+        }
+        uint256 outCount = limit < matchedCount ? limit : matchedCount;
+        address[] memory out = new address[](outCount);
+        for (uint256 i = 0; i < outCount; i++) {
+            out[i] = matched[i];
+        }
+        return out;
+    }
+
     /// @notice How many distinct subjects have ever received an attestation
     ///         (including subjects whose attestations are all revoked now).
     function subjectCount() external view returns (uint256) {
@@ -652,6 +684,35 @@ contract ReputationRegistry {
     function getLeaderboard(
         uint256 limit
     ) external view returns (LeaderboardEntry[] memory) {
+        return _rankedLeaderboard(Category.Overall, false, limit);
+    }
+
+    /// @notice Top subjects by one category's average — the "best
+    ///         communicators" board, as opposed to the overall board.
+    ///         Passing `Category.Overall` returns exactly `getLeaderboard`:
+    ///         the overall score already spans every category, so there is
+    ///         no separate "Overall-category-only" ranking. `average` and
+    ///         `count` are category-scoped; `tier` stays the subject's
+    ///         overall tier. Same exclusion, tie-break, and limit rules as
+    ///         `getLeaderboard`.
+    function getLeaderboardByCategory(
+        Category category,
+        uint256 limit
+    ) external view returns (LeaderboardEntry[] memory) {
+        bool filterCategory = category != Category.Overall;
+        return _rankedLeaderboard(category, filterCategory, limit);
+    }
+
+    /// @notice Shared ranking behind `getLeaderboard` and
+    ///         `getLeaderboardByCategory`: score every subject, drop the
+    ///         ones with no active attestations in scope, sort descending
+    ///         by average then count (stable, so first-seen order breaks
+    ///         remaining ties), and clamp to `limit`.
+    function _rankedLeaderboard(
+        Category category,
+        bool filterCategory,
+        uint256 limit
+    ) internal view returns (LeaderboardEntry[] memory) {
         LeaderboardEntry[] memory ranked = new LeaderboardEntry[](
             _subjects.length
         );
@@ -659,15 +720,27 @@ contract ReputationRegistry {
         for (uint256 i = 0; i < _subjects.length; i++) {
             Score memory s = _score(
                 _subjectAttestations[_subjects[i]],
-                Category.Overall,
-                false
+                category,
+                filterCategory
             );
             if (s.count == 0) continue;
+            // The tier is always the subject's OVERALL tier, even on a
+            // category board: a category average must not promote someone
+            // to Elite on the strength of one category alone.
+            Tier tier = filterCategory
+                ? _tierOf(
+                    _score(
+                        _subjectAttestations[_subjects[i]],
+                        Category.Overall,
+                        false
+                    )
+                )
+                : _tierOf(s);
             ranked[rankedCount++] = LeaderboardEntry({
                 subject: _subjects[i],
                 average: s.average,
                 count: s.count,
-                tier: _tierOf(s)
+                tier: tier
             });
         }
         // Insertion sort, descending by average, then by count.
