@@ -459,6 +459,7 @@ contract ReputationRegistry {
         a.disputedAt = 0;
         _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         emit AttestationRevoked(id, msg.sender, a.subject);
+        _recordSnapshot(a.subject, a.category);
     }
 
     /// @notice Dispute an attestation about you. Only the subject may
@@ -474,6 +475,7 @@ contract ReputationRegistry {
         a.disputeReason = reasonHash;
         a.disputedAt = uint64(block.timestamp);
         emit DisputeRaised(id, a.attester, a.subject);
+        _recordSnapshot(a.subject, a.category);
     }
 
     /// @notice Resolve a dispute over your attestation. Upholding clears the
@@ -498,6 +500,7 @@ contract ReputationRegistry {
             _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         }
         emit DisputeResolved(id, a.attester, a.subject, uphold);
+        _recordSnapshot(a.subject, a.category);
     }
 
     /// @notice Reinstate an attestation whose dispute went unanswered for the
@@ -517,6 +520,7 @@ contract ReputationRegistry {
         a.disputeReason = bytes32(0);
         a.disputedAt = 0;
         emit DisputeExpired(id, a.attester, a.subject);
+        _recordSnapshot(a.subject, a.category);
     }
 
     /// @notice Weighted average score across all active attestations.
