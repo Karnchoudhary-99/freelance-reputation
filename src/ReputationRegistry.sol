@@ -536,6 +536,41 @@ contract ReputationRegistry {
         return _score(_subjectAttestations[subject], category, true);
     }
 
+    /// @notice How many snapshots exist for a subject's score in one
+    ///         scope (`Category.Overall` for the overall score, or one
+    ///         specific category). Zero for a subject/category with no
+    ///         recorded changes.
+    function scoreHistoryLength(
+        address subject,
+        Category category
+    ) external view returns (uint256) {
+        return _scoreHistory[subject][category].length;
+    }
+
+    /// @notice One page of a subject's score history, oldest first — the
+    ///         data behind a reputation-over-time chart. Same paging
+    ///         semantics as `getAttestationsPaginated`: `limit` is clamped
+    ///         to the remaining snapshots and an offset past the end
+    ///         returns an empty array. History grows by one entry per
+    ///         state change (plus a category entry when the change touched
+    ///         one), so page it on busy subjects.
+    function getScoreHistory(
+        address subject,
+        Category category,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (ScoreSnapshot[] memory) {
+        ScoreSnapshot[] storage snapshots = _scoreHistory[subject][category];
+        if (offset >= snapshots.length) return new ScoreSnapshot[](0);
+        uint256 remaining = snapshots.length - offset;
+        uint256 count = limit < remaining ? limit : remaining;
+        ScoreSnapshot[] memory out = new ScoreSnapshot[](count);
+        for (uint256 i = 0; i < count; i++) {
+            out[i] = snapshots[offset + i];
+        }
+        return out;
+    }
+
     /// @notice All attestations for a subject, revoked ones included
     ///         (check `revoked` to tell them apart).
     function getAttestations(
