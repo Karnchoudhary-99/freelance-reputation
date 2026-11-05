@@ -536,6 +536,30 @@ contract ReputationRegistry {
         return _score(_subjectAttestations[subject], category, true);
     }
 
+    /// @notice Weighted average as it will stand (or stood) at time
+    ///         `when` — the decay preview behind "your reputation will be
+    ///         X in 30 days" prompts. Decay is measured against `when`,
+    ///         attestations created after `when` are excluded, and
+    ///         revoked/disputed records stay excluded as they stand now
+    ///         (see `_scoreAt` for the exact semantics). Passing the
+    ///         current block time returns exactly `getScore`.
+    function getScoreAt(
+        address subject,
+        uint64 when
+    ) external view returns (Score memory) {
+        return
+            _scoreAt(_subjectAttestations[subject], Category.Overall, false, when);
+    }
+
+    /// @notice Category-scoped version of `getScoreAt`.
+    function getScoreByCategoryAt(
+        address subject,
+        Category category,
+        uint64 when
+    ) external view returns (Score memory) {
+        return _scoreAt(_subjectAttestations[subject], category, true, when);
+    }
+
     /// @notice How many snapshots exist for a subject's score in one
     ///         scope (`Category.Overall` for the overall score, or one
     ///         specific category). Zero for a subject/category with no
@@ -693,6 +717,23 @@ contract ReputationRegistry {
             );
     }
 
+    /// @notice Tier as it will stand (or stood) at time `when`, from the
+    ///         decay-preview score — so a frontend can warn that a
+    ///         freelancer drops from Established to Emerging in N days
+    ///         unless they land fresh work. Same preview semantics as
+    ///         `getScoreAt`.
+    function tierOfAt(address subject, uint64 when) external view returns (Tier) {
+        return
+            _tierOf(
+                _scoreAt(
+                    _subjectAttestations[subject],
+                    Category.Overall,
+                    false,
+                    when
+                )
+            );
+    }
+
     function _tierOf(Score memory s) internal pure returns (Tier) {
         if (s.count == 0) return Tier.Unranked;
         if (s.average >= TIER_ELITE_AVG && s.count >= TIER_ELITE_COUNT) {
@@ -720,6 +761,20 @@ contract ReputationRegistry {
         profile.communication = _score(ids, Category.Communication, true);
         profile.timeliness = _score(ids, Category.Timeliness, true);
         profile.reliability = _score(ids, Category.Reliability, true);
+    }
+
+    /// @notice Decay-preview version of `getProfile`: every scope's score
+    ///         as it will stand (or stood) at time `when`.
+    function getProfileAt(
+        address subject,
+        uint64 when
+    ) external view returns (Profile memory profile) {
+        uint256[] storage ids = _subjectAttestations[subject];
+        profile.overall = _scoreAt(ids, Category.Overall, false, when);
+        profile.quality = _scoreAt(ids, Category.Quality, true, when);
+        profile.communication = _scoreAt(ids, Category.Communication, true, when);
+        profile.timeliness = _scoreAt(ids, Category.Timeliness, true, when);
+        profile.reliability = _scoreAt(ids, Category.Reliability, true, when);
     }
 
     /// @notice Every subject currently sitting in one tier, in first-seen
@@ -865,8 +920,20 @@ contract ReputationRegistry {
     /// @notice Decay factor (basis points) for an attestation last updated
     ///         at `timestamp`, measured against the current block time.
     function decayFactorBps(uint64 timestamp) public view returns (uint256) {
-        if (block.timestamp <= timestamp) return DECAY_FULL_BPS;
-        uint256 age = block.timestamp - timestamp;
+        return decayFactorBpsAt(timestamp, uint64(block.timestamp));
+    }
+
+    /// @notice Decay factor (basis points) for an attestation last updated
+    ///         at `timestamp`, measured against time `when` instead of the
+    ///         current block time — the building block of the score-preview
+    ///         views. A `when` before the update counts as full weight:
+    ///         the attestation had not aged yet at that point.
+    function decayFactorBpsAt(
+        uint64 timestamp,
+        uint64 when
+    ) public pure returns (uint256) {
+        if (when <= timestamp) return DECAY_FULL_BPS;
+        uint256 age = when - timestamp;
         if (age < DECAY_FULL_PERIOD) return DECAY_FULL_BPS;
         if (age < DECAY_HALF_PERIOD) return DECAY_HALF_BPS;
         return DECAY_QUARTER_BPS;
@@ -885,17 +952,36 @@ contract ReputationRegistry {
         uint256[] storage ids,
         Category category,
         bool filterCategory
+    ) internal view returns (Score memory) {
+        return _scoreAt(ids, category, filterCategory, uint64(block.timestamp));
+    }
+
+    /// @notice Score as it stands at time `when`, with decay measured
+    ///         against `when` instead of the current block time.
+    ///         Attestations created after `when` are excluded — they did
+    ///         not exist yet at that point. Revoked/disputed flags are
+    ///         read as they stand now: this is a decay preview, not a
+    ///         full historical reconstruction — a revocation or dispute
+    ///         that happened after `when` is not rewound. For a future
+    ///         `when` the result is exact, given the records as they are.
+    function _scoreAt(
+        uint256[] storage ids,
+        Category category,
+        bool filterCategory,
+        uint64 when
     ) internal view returns (Score memory result) {
         uint256 weightedSum;
         for (uint256 i = 0; i < ids.length; i++) {
             Attestation storage a = _attestations[ids[i]];
             if (a.revoked) continue;
             if (a.disputed) continue;
+            if (a.createdAt > when) continue;
             if (filterCategory && a.category != category) continue;
             // Fixed-point decay: multiply before dividing so a weight-1
             // attestation at quarter weight still counts (2500 bps), instead
             // of truncating to zero.
-            uint256 effective = uint256(a.weight) * decayFactorBps(a.updatedAt);
+            uint256 effective = uint256(a.weight) *
+                decayFactorBpsAt(a.updatedAt, when);
             weightedSum += uint256(a.score) * effective;
             result.effectiveWeight += effective;
             result.totalWeight += a.weight;

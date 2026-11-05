@@ -16,6 +16,7 @@ that travel with the worker, not the platform.
 - [x] Signed batch attestations (mixed-attester relayed batches, atomic)
 - [x] Discovery views (per-category leaderboards, tier directory)
 - [x] Score history (on-chain snapshots per state change, paginated reads)
+- [x] Score preview (decay-preview views: score/profile/tier as of any time)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -207,6 +208,31 @@ one entry per state change, so page it on busy subjects — and note
 that snapshots cost gas on every write (see `docs/gas-report.md`):
 reputation-over-time is a feature, not a free lunch.
 
+### Score preview
+
+Score history looks backwards; the preview views look forwards (or
+backwards, for audit) — what a freelancer's score will be at a given
+time, once today's attestations have aged:
+
+- `getScoreAt(subject, when)` / `getScoreByCategoryAt(subject, category, when)`
+  — the weighted average with decay measured against `when` instead of
+  now. Passing the current block time returns exactly `getScore`.
+- `getProfileAt(subject, when)` — the whole profile (overall + four
+  categories) as of `when`, in one call.
+- `tierOfAt(subject, when)` — the tier as of `when`, so a frontend can
+  warn that a freelancer drops from Established to Emerging in N days
+  unless they land fresh work.
+- `decayFactorBpsAt(timestamp, when)` — the raw decay factor behind
+  the previews (10000 / 5000 / 2500 bps by age tier).
+
+Two semantics worth knowing: attestations created after `when` are
+excluded (they did not exist yet), but revoked/disputed flags are read
+as they stand now — a preview is a decay projection, not a full
+historical reconstruction, so a revocation that happened after `when`
+is not rewound. For a future `when` the result is exact, given the
+records as they are. Previews are pure reads and cost about the same
+as the live views (see `docs/gas-report.md`).
+
 ### Example flow
 
 ```text
@@ -233,12 +259,12 @@ time has passed since the last change touching that scope (a warp ages
 every attestation, so snapshots drift from live scores by design after
 one). Baseline: 7 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 1,724,969 gas, 7,760 bytes runtime).
+per-function gas (deploy 3,306,783 gas, 15,299 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 58 tests (52 unit + 6 invariants)
+forge test          # 84 tests (77 unit + 7 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 
