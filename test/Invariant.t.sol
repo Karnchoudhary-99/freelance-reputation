@@ -18,6 +18,16 @@ contract ReputationHandler is Test {
     address[] public actors;
 
     uint256 public created;
+    // Timestamps of the last state-changing handler call, per subject
+    // (overall scope) and per subject + category (category scope) —
+    // warps excluded. A snapshot is only guaranteed to equal the live
+    // score while no time has passed since the last change touching
+    // its scope: a warp ages every attestation (decay), and a later
+    // change to another subject or category does not refresh this
+    // subject's/category's frozen snapshot.
+    mapping(address => uint256) public lastOverallChangeAt;
+    mapping(address => mapping(uint256 => uint256))
+        public lastCategoryChangeAt;
     // id => mirror of the record's lifecycle flags
     mapping(uint256 => bool) public revoked;
     mapping(uint256 => bool) public disputed;
@@ -56,6 +66,7 @@ contract ReputationHandler is Test {
         if (existing != 0 && disputed[existing - 1]) return; // must resolve first
         vm.prank(attester);
         uint256 id = registry.attest(subject, category, score, bytes32(seed));
+        _touch(subject, category);
         if (existing == 0) {
             recordAttester[id] = attester;
             recordSubject[id] = subject;
@@ -72,6 +83,7 @@ contract ReputationHandler is Test {
         if (revoked[id]) return;
         vm.prank(recordAttester[id]);
         registry.revokeAttestation(id);
+        _touch(recordSubject[id], recordCategory[id]);
         revoked[id] = true;
         disputed[id] = false;
         disputedAt[id] = 0;
@@ -86,6 +98,7 @@ contract ReputationHandler is Test {
         if (revoked[id] || disputed[id]) return;
         vm.prank(recordSubject[id]);
         registry.disputeAttestation(id, bytes32(seed));
+        _touch(recordSubject[id], recordCategory[id]);
         disputed[id] = true;
         disputedAt[id] = uint64(block.timestamp);
     }
@@ -96,6 +109,7 @@ contract ReputationHandler is Test {
         if (revoked[id] || !disputed[id]) return;
         vm.prank(recordAttester[id]);
         registry.resolveDispute(id, uphold);
+        _touch(recordSubject[id], recordCategory[id]);
         disputed[id] = false;
         disputedAt[id] = 0;
         if (!uphold) {
@@ -115,8 +129,17 @@ contract ReputationHandler is Test {
         }
         vm.prank(recordSubject[id]);
         registry.expireDispute(id);
+        _touch(recordSubject[id], recordCategory[id]);
         disputed[id] = false;
         disputedAt[id] = 0;
+    }
+
+    function _touch(
+        address subject,
+        ReputationRegistry.Category category
+    ) internal {
+        lastOverallChangeAt[subject] = block.timestamp;
+        lastCategoryChangeAt[subject][uint256(category)] = block.timestamp;
     }
 
     function warp(uint256 seed) external {
@@ -249,5 +272,41 @@ contract ReputationInvariants is Test {
             }
         }
         assertEq(summed, handler.created());
+    }
+
+    /// @notice The latest frozen snapshot must equal the live score —
+    ///         but only while no time has passed since the last state
+    ///         change touching that scope: a warp ages every attestation
+    ///         (decay), so the live score drifts from the frozen snapshot
+    ///         by design, and a change to another subject or category
+    ///         does not refresh this scope's snapshot. The handler
+    ///         tracks the last mutation timestamp per subject and per
+    ///         subject + category, so this invariant checks exactly the
+    ///         scopes where the two must agree, overall + all four
+    ///         categories.
+    function invariant_latest_snapshot_matches_live_score() public view {
+        for (uint256 i = 0; i < actors.length; i++) {
+            for (uint256 c = 0; c < 5; c++) {
+                uint256 lastChange = c == 0
+                    ? handler.lastOverallChangeAt(actors[i])
+                    : handler.lastCategoryChangeAt(actors[i], c);
+                if (block.timestamp != lastChange) continue;
+                ReputationRegistry.Category category = ReputationRegistry
+                    .Category(c);
+                uint256 len = registry.scoreHistoryLength(
+                    actors[i],
+                    category
+                );
+                if (len == 0) continue;
+                ReputationRegistry.ScoreSnapshot[] memory last = registry
+                    .getScoreHistory(actors[i], category, len - 1, 1);
+                ReputationRegistry.Score memory live = c == 0
+                    ? registry.getScore(actors[i])
+                    : registry.getScoreByCategory(actors[i], category);
+                assertEq(last[0].average, live.average);
+                assertEq(last[0].count, live.count);
+                assertEq(last[0].effectiveWeight, live.effectiveWeight);
+            }
+        }
     }
 }

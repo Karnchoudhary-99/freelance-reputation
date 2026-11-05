@@ -223,12 +223,15 @@ alice score = (60*3 + 90*1) / 4 = 67.50
 dispute / resolve / expire cycles plus time warps (crossing the 90-day
 and 365-day decay tiers and the 30-day dispute window) with a guarded
 handler, so every handler call is expected to succeed and a revert can
-never mask a broken invariant. Six invariants hold across every run:
+never mask a broken invariant. Seven invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
 recomputed independently from the raw records, no duplicate active
-(attester, category) keys, and record ranges plus attestation totals.
-Baseline: 6 invariants × 256 runs × depth 100 — 25,600 handler calls
+(attester, category) keys, record ranges plus attestation totals, and
+the latest score-history snapshot matching the live score whenever no
+time has passed since the last change touching that scope (a warp ages
+every attestation, so snapshots drift from live scores by design after
+one). Baseline: 7 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
 per-function gas (deploy 1,724,969 gas, 7,760 bytes runtime).
 
