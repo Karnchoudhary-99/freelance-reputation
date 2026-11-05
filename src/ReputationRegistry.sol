@@ -24,6 +24,12 @@ pragma solidity 0.8.24;
 ///      they believe is unfair; disputed attestations are excluded from
 ///      scores until the attester upholds them, concedes (revokes), or the
 ///      30-day dispute window lapses and the subject reinstates them.
+///      The deployer owns the registry and may mark attesters as
+///      verified (e.g. a platform whose clients passed KYC, or a DAO
+///      whose members passed a vote): a verified attester's next
+///      attestation carries +1 snapshot weight, capped at 3, so
+///      established clients count a little more. Verification is a
+///      snapshot-time boost only — it never rewrites existing records.
 contract ReputationRegistry {
     enum Category {
         Overall,
@@ -132,6 +138,7 @@ contract ReputationRegistry {
     error UnknownAttestation();
     error ExpiredSignature();
     error InvalidSignature();
+    error NotOwner();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -176,6 +183,7 @@ contract ReputationRegistry {
         address indexed attester,
         address indexed subject
     );
+    event AttesterVerified(address indexed attester, bool verified);
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
@@ -202,10 +210,19 @@ contract ReputationRegistry {
     /// @notice EIP-712 domain separator, fixed at deploy time.
     bytes32 public immutable DOMAIN_SEPARATOR;
 
+    /// @notice The deployer: the only account that may manage the
+    ///         verified-attester registry.
+    address public immutable owner;
+
+    /// @notice Verified attesters, set by the owner (see
+    ///         `setVerifiedAttester`).
+    mapping(address => bool) private _verifiedAttesters;
+
     /// @notice Next usable nonce per attester (replay protection).
     mapping(address => uint256) public nonces;
 
     constructor() {
+        owner = msg.sender;
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 keccak256(
@@ -1025,8 +1042,32 @@ contract ReputationRegistry {
         return DECAY_QUARTER_BPS;
     }
 
+    /// @notice Mark an attester verified (or un-verify them). Only the
+    ///         owner may call this. Verification is a trust signal the
+    ///         deployer vouches for — e.g. a platform's KYC'd clients —
+    ///         and it boosts the weight of the attester's NEXT
+    ///         attestations (see `attesterWeight`); it never rewrites
+    ///         records that already exist.
+    function setVerifiedAttester(address attester, bool verified) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (attester == address(0)) revert ZeroAddress();
+        _verifiedAttesters[attester] = verified;
+        emit AttesterVerified(attester, verified);
+    }
+
+    /// @notice Whether an attester is currently verified.
+    function isVerifiedAttester(
+        address attester
+    ) external view returns (bool) {
+        return _verifiedAttesters[attester];
+    }
+
     /// @notice Weight this attester's next attestation would carry, from their
     ///         own current (decayed) average: <50 -> 1, 50-79 -> 2, >=80 -> 3.
+    ///         A verified attester gets +1 on top, capped at 3: a newcomer
+    ///         the owner vouches for counts as much as a mid-reputation
+    ///         attester, but verification alone can never outrank a
+    ///         consistently well-rated one.
     function attesterWeight(address attester) public view returns (uint8) {
         Score memory s = _score(_subjectAttestations[attester], Category.Overall, false);
         if (s.average >= 8000) return 3;
