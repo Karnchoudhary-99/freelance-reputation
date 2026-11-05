@@ -64,6 +64,16 @@ contract ReputationRegistry {
         bytes32 commentHash;
     }
 
+    /// @notice One attestation-with-evidence input for a batch call: the
+    ///         same fields as `AttestInput`, plus the evidence hash.
+    struct AttestWithEvidenceInput {
+        address subject;
+        Category category;
+        uint8 score;
+        bytes32 commentHash;
+        bytes32 evidenceHash;
+    }
+
     /// @notice One signed attestation input for a relayed batch call: the
     ///         same fields as a signed attestation, plus the signature.
     struct SignedAttestInput {
@@ -294,6 +304,26 @@ contract ReputationRegistry {
                 inputs[i].commentHash,
                 bytes32(0),
                 false
+            );
+        }
+    }
+
+    /// @notice Batch version of `attestWithEvidence`: attach evidence to
+    ///         many attestations in one transaction, with the same atomicity
+    ///         guarantees as `attestBatch`.
+    function attestBatchWithEvidence(
+        AttestWithEvidenceInput[] calldata inputs
+    ) external returns (uint256[] memory ids) {
+        ids = new uint256[](inputs.length);
+        for (uint256 i = 0; i < inputs.length; i++) {
+            ids[i] = _attest(
+                msg.sender,
+                inputs[i].subject,
+                inputs[i].category,
+                inputs[i].score,
+                inputs[i].commentHash,
+                inputs[i].evidenceHash,
+                true
             );
         }
     }
