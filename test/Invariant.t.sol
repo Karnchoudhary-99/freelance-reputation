@@ -96,6 +96,7 @@ contract ReputationHandler is Test {
         if (created == 0) return;
         uint256 id = seed % created;
         if (revoked[id] || disputed[id]) return;
+        if (_isExpired(id)) return; // expired records cannot be disputed
         vm.prank(recordSubject[id]);
         registry.disputeAttestation(id, bytes32(seed));
         _touch(recordSubject[id], recordCategory[id]);
@@ -142,6 +143,18 @@ contract ReputationHandler is Test {
         lastCategoryChangeAt[subject][uint256(category)] = block.timestamp;
     }
 
+    /// @notice Whether a record is expired right now: its last update
+    ///         plus the registry's expiry duration is at or before now.
+    ///         Mirrors `ReputationRegistry.isExpired` so the handler
+    ///         never calls a function the contract would revert on.
+    function _isExpired(uint256 id) internal view returns (bool) {
+        uint64 duration = registry.expiryDuration();
+        if (duration == 0) return false;
+        return
+            block.timestamp >=
+            uint256(registry.attestation(id).updatedAt) + duration;
+    }
+
     function warp(uint256 seed) external {
         // Forward only, up to ~400 days: crosses the 90-day and 365-day
         // decay tiers and the 30-day dispute window in a single run.
@@ -182,12 +195,20 @@ contract ReputationInvariants is Test {
     }
 
     function invariant_count_matches_active_records() public view {
+        uint64 duration = registry.expiryDuration();
         for (uint256 i = 0; i < actors.length; i++) {
             ReputationRegistry.Attestation[] memory recs = registry
                 .getAttestations(actors[i]);
             uint256 active;
             for (uint256 j = 0; j < recs.length; j++) {
-                if (!recs[j].revoked && !recs[j].disputed) active++;
+                if (recs[j].revoked || recs[j].disputed) continue;
+                // Expired records stop counting, like revoked ones.
+                if (
+                    duration > 0 &&
+                    block.timestamp >=
+                    uint256(recs[j].updatedAt) + duration
+                ) continue;
+                active++;
             }
             assertEq(registry.getScore(actors[i]).count, active);
         }
@@ -209,6 +230,7 @@ contract ReputationInvariants is Test {
     }
 
     function invariant_recomputed_average_matches() public view {
+        uint64 duration = registry.expiryDuration();
         for (uint256 i = 0; i < actors.length; i++) {
             ReputationRegistry.Attestation[] memory recs = registry
                 .getAttestations(actors[i]);
@@ -218,6 +240,11 @@ contract ReputationInvariants is Test {
             uint256 count;
             for (uint256 j = 0; j < recs.length; j++) {
                 if (recs[j].revoked || recs[j].disputed) continue;
+                if (
+                    duration > 0 &&
+                    block.timestamp >=
+                    uint256(recs[j].updatedAt) + duration
+                ) continue;
                 uint256 eff = uint256(recs[j].weight) *
                     registry.decayFactorBps(recs[j].updatedAt);
                 weightedSum += uint256(recs[j].score) * eff;

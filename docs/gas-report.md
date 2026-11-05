@@ -3,7 +3,8 @@
 Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 200 runs), from the unit suites in `test/ReputationRegistry.t.sol`,
 `test/ScoreHistory.t.sol`, `test/ScorePreview.t.sol`,
-`test/Evidence.t.sol`, and `test/VerifiedAttesters.t.sol`.
+`test/Evidence.t.sol`, `test/VerifiedAttesters.t.sol`, and
+`test/AttestationExpiry.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -12,8 +13,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 3,646,848 gas |
-| Runtime size | 16,586 bytes |
+| Deployment cost | 3,823,180 gas |
+| Runtime size | 17,298 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -42,29 +43,42 @@ single-slot update (~37k gas avg); `attest`'s average rises slightly
 (357,290 → 361,828) because `_attest` reads the verification flag on
 every call.
 
+Attestation expiry added ~176k gas to deployment (+712 bytes): the
+`expiryDuration` slot, the `setExpiryDuration` / `expiresAt` /
+`isExpired` views plus the `ExpiryDurationUpdated` event, the
+`AttestationExpired` guard on disputes, and the expiry check inside
+`_scoreAt`. `setExpiryDuration` is a single-slot update (~27k gas
+avg). Every score read now pays one extra expiry check per record
+(`_isExpiredAt` reads the duration and compares timestamps), so
+`attest`'s average rises again (361,828 → 366,199) and the
+category-scoped reads move by a few thousand gas; the check is pure
+arithmetic on already-loaded records, so the cost stays linear in
+attestation count with no new storage writes.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
 | --- | --- | --- | --- | --- | --- |
-| `attest` | 22,317 | 361,828 | 383,446 | 517,746 | 91 |
-| `attestWithEvidence` | 241,201 | 479,812 | 538,117 | 538,117 | 10 |
-| `attestBatchWithEvidence` | 541,559 | 742,001 | 742,001 | 942,443 | 2 |
-| `setEvidence` | 24,189 | 38,646 | 33,332 | 55,087 | 8 |
-| `setVerifiedAttester` | 21,949 | 36,967 | 45,815 | 45,815 | 13 |
-| `disputeAttestation` | 26,244 | 103,936 | 100,101 | 188,361 | 17 |
-| `revokeAttestation` | 23,700 | 74,889 | 80,493 | 148,781 | 11 |
-| `resolveDispute` | 26,231 | 113,122 | 128,687 | 234,900 | 10 |
-| `expireDispute` | 26,048 | 65,678 | 30,421 | 139,494 | 6 |
-| `getScore` (view) | 3,315 | 17,282 | 18,897 | 27,168 | 32 |
-| `getScoreByCategory` (view) | 20,201 | 21,601 | 21,596 | 23,012 | 4 |
+| `attest` | 22,317 | 366,199 | 386,055 | 520,967 | 106 |
+| `attestWithEvidence` | 244,467 | 483,078 | 541,383 | 541,383 | 10 |
+| `attestBatchWithEvidence` | 544,742 | 746,406 | 746,406 | 948,071 | 2 |
+| `setEvidence` | 24,234 | 38,691 | 33,377 | 55,132 | 8 |
+| `setVerifiedAttester` | 21,927 | 36,947 | 45,796 | 45,796 | 13 |
+| `setExpiryDuration` | 21,686 | 26,707 | 27,754 | 27,766 | 15 |
+| `disputeAttestation` | 26,222 | 103,062 | 102,690 | 191,562 | 19 |
+| `revokeAttestation` | 23,678 | 75,552 | 80,471 | 151,371 | 12 |
+| `resolveDispute` | 26,231 | 117,124 | 140,249 | 238,124 | 11 |
+| `expireDispute` | 26,048 | 66,549 | 30,421 | 142,106 | 6 |
+| `getScore` (view) | 3,289 | 18,625 | 16,652 | 30,366 | 43 |
+| `getScoreByCategory` (view) | 23,421 | 24,821 | 24,816 | 26,232 | 4 |
 | `getScoreHistory` (view) | 3,166 | 20,714 | 22,090 | 49,983 | 14 |
-| `attesterWeight` (view) | 5,390 | 16,922 | 16,100 | 24,732 | 13 |
-| `decayFactorBps` (view) | 579 | 706 | 754 | 768 | 7 |
-| `decayFactorBpsAt` (view) | 658 | 777 | 827 | 847 | 6 |
-| `getScoreAt` (view) | 10,078 | 15,530 | 13,996 | 22,619 | 13 |
-| `getScoreByCategoryAt` (view) | 21,698 | 21,698 | 21,698 | 21,698 | 2 |
-| `getProfileAt` (view) | 39,269 | 39,269 | 39,269 | 39,269 | 1 |
-| `tierOfAt` (view) | 27,941 | 30,125 | 31,161 | 31,274 | 3 |
+| `attesterWeight` (view) | 5,383 | 18,959 | 18,593 | 27,949 | 13 |
+| `decayFactorBps` (view) | 553 | 680 | 728 | 742 | 7 |
+| `decayFactorBpsAt` (view) | 636 | 755 | 805 | 825 | 6 |
+| `getScoreAt` (view) | 10,074 | 17,117 | 16,592 | 25,839 | 15 |
+| `getScoreByCategoryAt` (view) | 24,878 | 24,878 | 24,878 | 24,878 | 2 |
+| `getProfileAt` (view) | 47,389 | 47,389 | 47,389 | 47,389 | 1 |
+| `tierOfAt` (view) | 31,139 | 33,731 | 34,971 | 35,084 | 3 |
 | `getLeaderboard` (view) | 3,134 | 38,865 | 40,049 | 60,143 | 13 |
 | `getLeaderboardByCategory` (view) | 37,573 | 71,266 | 70,875 | 128,670 | 6 |
 
