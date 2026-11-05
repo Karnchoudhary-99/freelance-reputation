@@ -1,7 +1,8 @@
 # Gas report — ReputationRegistry
 
 Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
-200 runs), from the unit suite in `test/ReputationRegistry.t.sol`.
+200 runs), from the unit suites in `test/ReputationRegistry.t.sol`
+and `test/ScoreHistory.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -10,24 +11,43 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 2,851,666 gas |
-| Runtime size | 13,195 bytes |
+| Deployment cost | 3,158,579 gas |
+| Runtime size | 14,614 bytes |
+
+Score history added ~307k gas to deployment (+1,419 bytes): the
+`_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
+`_recordSnapshot` helper plus its two view functions.
 
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
 | --- | --- | --- | --- | --- | --- |
-| `attest` | 22,229 | 147,883 | 171,736 | 191,672 | 41 |
-| `disputeAttestation` | 26,154 | 53,556 | 59,976 | 79,948 | 12 |
-| `revokeAttestation` | 23,609 | 33,950 | 38,499 | 40,499 | 7 |
-| `resolveDispute` | 26,221 | 34,513 | 37,514 | 39,163 | 6 |
-| `expireDispute` | 25,958 | 30,527 | 30,331 | 37,912 | 5 |
-| `getScore` (view) | 3,095 | 18,333 | 21,712 | 26,557 | 21 |
-| `getScoreByCategory` (view) | 19,585 | 20,939 | 20,943 | 22,287 | 4 |
-| `attesterWeight` (view) | 2,956 | 15,648 | 14,944 | 21,854 | 7 |
-| `decayFactorBps` (view) | 443 | 566 | 596 | 597 | 6 |
+| `attest` | 22,333 | 339,955 | 378,421 | 512,354 | 60 |
+| `disputeAttestation` | 26,133 | 98,801 | 99,820 | 187,884 | 15 |
+| `revokeAttestation` | 23,677 | 68,181 | 79,300 | 148,392 | 8 |
+| `resolveDispute` | 26,200 | 93,947 | 99,107 | 145,465 | 8 |
+| `expireDispute` | 26,092 | 65,588 | 30,465 | 139,136 | 6 |
+| `getScore` (view) | 3,078 | 17,783 | 21,695 | 26,540 | 25 |
+| `getScoreByCategory` (view) | 19,625 | 20,979 | 20,983 | 22,327 | 4 |
+| `getScoreHistory` (view) | 3,188 | 20,736 | 22,112 | 50,005 | 14 |
+| `attesterWeight` (view) | 2,979 | 15,671 | 14,967 | 21,877 | 7 |
+| `decayFactorBps` (view) | 421 | 544 | 574 | 575 | 6 |
 | `getLeaderboard` (view) | 3,134 | 38,865 | 40,049 | 60,143 | 13 |
-| `getLeaderboardByCategory` (view) | 37,595 | 71,288 | 70,897 | 128,692 | 6 |
+| `getLeaderboardByCategory` (view) | 37,573 | 71,266 | 70,875 | 128,670 | 6 |
+
+## Score history cost
+
+Every state-changing call now pays for its snapshots: `attest`
+recomputes the subject's overall score plus the touched category's
+score and appends one or two `ScoreSnapshot` structs (cold storage
+on the first snapshot per subject/category). That roughly doubles
+`attest`'s average in these tests (147,883 → 339,955 gas) and lifts
+the dispute/revoke calls by a similar absolute amount; the max
+`attest` figure (512,354) reflects cold snapshot storage plus the
+score recomputation over a subject's growing attestation list on
+each snapshot. Reads stay cheap: `getScoreHistory`
+costs about the same as the other paginated views and scales with
+the page size, not with the subject's total history.
 | `getSubjectsByTier` (view) | 43,910 | 171,066 | 207,085 | 207,858 | 9 |
 
 ## Reading the numbers
