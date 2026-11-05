@@ -17,6 +17,7 @@ that travel with the worker, not the platform.
 - [x] Discovery views (per-category leaderboards, tier directory)
 - [x] Score history (on-chain snapshots per state change, paginated reads)
 - [x] Score preview (decay-preview views: score/profile/tier as of any time)
+- [x] Attestation evidence (evidence hash per attestation, batch + late attach)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -232,6 +233,29 @@ historical reconstruction, so a revocation that happened after `when`
 is not rewound. For a future `when` the result is exact, given the
 records as they are. Previews are pure reads and cost about the same
 as the live views (see `docs/gas-report.md`).
+
+### Attestation evidence
+
+A score is only as trustworthy as the work behind it, so an attestation
+can point at supporting evidence — the content hash of the delivered
+work, an invoice, a shipped artifact:
+
+- `attestWithEvidence(subject, category, score, commentHash, evidenceHash)`
+  — like `attest`, but stores `evidenceHash` on the record, readable via
+  `attestation(id).evidenceHash`. Use a content hash (e.g. IPFS CID hash),
+  never a URL: hashes survive link rot and stay verifiable.
+- `setEvidence(id, evidenceHash)` — attach or correct evidence later
+  (evidence often only exists once the work is delivered). Only the
+  attester, only while the record is active; a revoked attestation is a
+  frozen audit record and keeps its original evidence. Changing evidence
+  never touches the score, the decay clock, or the score history.
+- `attestBatchWithEvidence(inputs)` — batch migration with per-entry
+  evidence, same atomicity as `attestBatch`.
+- Plain `attest` / `attestBatch` re-attests leave previously attached
+  evidence untouched; `attestWithEvidence` replaces it (passing zero
+  clears it). Signed attestations carry no evidence field — the EIP-712
+  type is unchanged — but the attester can attach it afterwards with
+  `setEvidence`. Evidence survives dispute raise/resolve unchanged.
 
 ### Example flow
 
