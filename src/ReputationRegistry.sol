@@ -24,6 +24,11 @@ pragma solidity 0.8.24;
 ///      they believe is unfair; disputed attestations are excluded from
 ///      scores until the attester upholds them, concedes (revokes), or the
 ///      30-day dispute window lapses and the subject reinstates them.
+///      Attestations expire: after `expiryDuration` (730 days by
+///      default, owner-configurable, 0 disables expiry) an attestation
+///      stops counting toward every score until the attester
+///      re-attests and refreshes it — stale endorsements fade out on
+///      their own, like decay, but all the way to zero.
 ///      The deployer owns the registry and may mark attesters as
 ///      verified (e.g. a platform whose clients passed KYC, or a DAO
 ///      whose members passed a vote): a verified attester's next
@@ -139,6 +144,7 @@ contract ReputationRegistry {
     error ExpiredSignature();
     error InvalidSignature();
     error NotOwner();
+    error AttestationExpired();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -184,6 +190,7 @@ contract ReputationRegistry {
         address indexed subject
     );
     event AttesterVerified(address indexed attester, bool verified);
+    event ExpiryDurationUpdated(uint64 expiryDuration);
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
@@ -198,6 +205,14 @@ contract ReputationRegistry {
     /// @notice How long an attester has to answer a dispute before the
     ///         subject may reinstate the attestation unilaterally.
     uint256 public constant DISPUTE_WINDOW = 30 days;
+
+    /// @notice How long an attestation counts toward scores after its
+    ///         last update (attest, re-attest, or upheld dispute).
+    ///         Past that point it is expired: excluded from every score
+    ///         until the attester re-attests and refreshes the clock.
+    ///         The owner may change this; 0 disables expiry entirely
+    ///         (attestations then count forever, as before this feature).
+    uint64 public expiryDuration = 730 days;
 
     /// @notice EIP-712 type hash for a signed attestation. The attester
     ///         signs off-chain (e.g. from a mobile wallet) and anyone —
@@ -1060,6 +1075,50 @@ contract ReputationRegistry {
         address attester
     ) external view returns (bool) {
         return _verifiedAttesters[attester];
+    }
+
+    /// @notice Change how long attestations count toward scores. Only
+    ///         the owner may call this. The new duration applies to
+    ///         every record from its own last update — it is not
+    ///         per-attestation, so shortening it can expire old records
+    ///         immediately, and setting it to 0 revives every expired
+    ///         record at once (they count again, as if expiry never
+    ///         happened). Existing records are never rewritten.
+    function setExpiryDuration(uint64 duration) external {
+        if (msg.sender != owner) revert NotOwner();
+        expiryDuration = duration;
+        emit ExpiryDurationUpdated(duration);
+    }
+
+    /// @notice When an attestation stops counting toward scores: its
+    ///         last update plus the current expiry duration. Returns 0
+    ///         while expiry is disabled, so callers can tell "never
+    ///         expires" apart from a timestamp.
+    function expiresAt(uint256 id) external view returns (uint64) {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        if (expiryDuration == 0) return 0;
+        return _attestations[id].updatedAt + expiryDuration;
+    }
+
+    /// @notice Whether an attestation is expired right now (its last
+    ///         update is older than the expiry duration). Expired
+    ///         records stay readable and revocable, but count toward no
+    ///         score until the attester re-attests.
+    function isExpired(uint256 id) external view returns (bool) {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        return _isExpiredAt(_attestations[id], uint64(block.timestamp));
+    }
+
+    /// @notice Expiry as it stands at time `when`: true once `when`
+    ///         reaches the record's last update plus the current expiry
+    ///         duration. The score-preview views use this so "your
+    ///         reputation in 30 days" also reflects records expiring.
+    function _isExpiredAt(
+        Attestation storage a,
+        uint64 when
+    ) internal view returns (bool) {
+        if (expiryDuration == 0) return false;
+        return when >= a.updatedAt + expiryDuration;
     }
 
     /// @notice Weight this attester's next attestation would carry, from their
