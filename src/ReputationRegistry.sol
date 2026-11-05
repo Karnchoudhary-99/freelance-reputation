@@ -720,6 +720,29 @@ contract ReputationRegistry {
         return out;
     }
 
+    /// @notice The most recent snapshot of a subject's score in one
+    ///         scope, plus whether any history exists at all — the
+    ///         one-call version of reading the last page of
+    ///         `getScoreHistory`. `exists` is false (and the snapshot
+    ///         all zeros) for a subject/category with no recorded
+    ///         changes. Like every snapshot, the result is frozen at
+    ///         the last state change: after time passes (decay, expiry)
+    ///         it can differ from the live score, which is the point —
+    ///         it answers "what was the score after the last change",
+    ///         not "what is it now".
+    function latestScoreSnapshot(
+        address subject,
+        Category category
+    )
+        external
+        view
+        returns (ScoreSnapshot memory snapshot, bool exists)
+    {
+        ScoreSnapshot[] storage snapshots = _scoreHistory[subject][category];
+        if (snapshots.length == 0) return (snapshot, false);
+        return (snapshots[snapshots.length - 1], true);
+    }
+
     /// @notice All attestations for a subject, revoked ones included
     ///         (check `revoked` to tell them apart).
     function getAttestations(
@@ -752,6 +775,45 @@ contract ReputationRegistry {
         Attestation[] memory out = new Attestation[](count);
         for (uint256 i = 0; i < count; i++) {
             out[i] = _attestations[ids[offset + i]];
+        }
+        return out;
+    }
+
+    /// @notice One page of a subject's attestations in ONE category,
+    ///         in creation order (oldest first) — the view behind "show
+    ///         me every Quality endorsement for this freelancer". Same
+    ///         paging semantics as `getAttestationsPaginated`: `limit`
+    ///         is clamped to the remaining records in the category and
+    ///         an offset past the end returns an empty array. Revoked
+    ///         and disputed records are included, like in
+    ///         `getAttestations` (check the flags to tell them apart).
+    ///         This is a view over the subject's full history, so it
+    ///         scans every record even when the page is small; frontends
+    ///         should call it off-chain via `eth_call`.
+    function getAttestationsByCategory(
+        address subject,
+        Category category,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (Attestation[] memory) {
+        uint256[] storage ids = _subjectAttestations[subject];
+        uint256 total;
+        for (uint256 i = 0; i < ids.length; i++) {
+            if (_attestations[ids[i]].category == category) total++;
+        }
+        if (offset >= total) return new Attestation[](0);
+        uint256 remaining = total - offset;
+        uint256 count = limit < remaining ? limit : remaining;
+        Attestation[] memory out = new Attestation[](count);
+        uint256 seen;
+        uint256 written;
+        for (uint256 i = 0; i < ids.length && written < count; i++) {
+            Attestation storage a = _attestations[ids[i]];
+            if (a.category != category) continue;
+            if (seen >= offset) {
+                out[written++] = a;
+            }
+            seen++;
         }
         return out;
     }

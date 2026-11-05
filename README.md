@@ -20,6 +20,7 @@ that travel with the worker, not the platform.
 - [x] Attestation evidence (evidence hash per attestation, batch + late attach)
 - [x] Verified attesters (owner-managed registry, +1 snapshot weight, capped at 3)
 - [x] Attestation expiry (730-day default, owner-configurable, re-attest revives)
+- [x] Category reads + latest snapshot (paginated per-category attestations, one-call latest snapshot)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -303,6 +304,26 @@ work, an invoice, a shipped artifact:
   type is unchanged — but the attester can attach it afterwards with
   `setEvidence`. Evidence survives dispute raise/resolve unchanged.
 
+### Category reads and latest snapshot
+
+Two read helpers for frontends that already know which slice they want:
+
+- `getAttestationsByCategory(subject, category, offset, limit)` — one
+  page of a subject's attestations in a single category, in creation
+  order, with the same limit-clamping and empty-page-past-the-end
+  semantics as the other paginated reads. Revoked and disputed records
+  are included (check the flags). A re-attest updates in place, so a
+  category never shows the same attester twice. Like the other
+  unbounded views, it scans the subject's full history — call it
+  off-chain via `eth_call`.
+- `latestScoreSnapshot(subject, category)` — the most recent frozen
+  snapshot for one scope plus an `exists` flag (`false` with an
+  all-zero snapshot when there is no history). One call instead of
+  paging `getScoreHistory` to its last entry. Frozen means frozen: after
+  time passes the snapshot can differ from the live score (decay and
+  expiry move the live score; the snapshot reports the score as it
+  stood after the last change).
+
 ### Example flow
 
 ```text
@@ -334,7 +355,7 @@ per-function gas (deploy 3,306,783 gas, 15,299 bytes runtime).
 ### Run it
 
 ```sh
-forge test          # 127 tests (120 unit + 7 invariants)
+forge test          # 136 tests (129 unit + 7 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 
