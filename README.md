@@ -378,7 +378,7 @@ every attestation, so snapshots drift from live scores by design after
 one), and the strike mirror matching the registry with `attesterWeight`
 0 exactly while suspended and 1–3 otherwise. Baseline: 8 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 3,306,783 gas, 15,299 bytes runtime).
+per-function gas (deploy 4,278,345 gas, 19,746 bytes runtime).
 
 ### Run it
 

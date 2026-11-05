@@ -4,7 +4,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 200 runs), from the unit suites in `test/ReputationRegistry.t.sol`,
 `test/ScoreHistory.t.sol`, `test/ScorePreview.t.sol`,
 `test/Evidence.t.sol`, `test/VerifiedAttesters.t.sol`,
-`test/AttestationExpiry.t.sol`, and `test/CategoryReads.t.sol`.
+`test/AttestationExpiry.t.sol`, `test/CategoryReads.t.sol`, and
+`test/AttesterStrikes.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -13,8 +14,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 4,091,717 gas |
-| Runtime size | 18,538 bytes |
+| Deployment cost | 4,278,345 gas |
+| Runtime size | 19,746 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -64,32 +65,49 @@ full history twice: once to count, once to collect the page);
 `latestScoreSnapshot` is a single storage read at ~11k gas. Both are
 views for off-chain `eth_call`, not transaction inputs.
 
+Attester strikes & suspension added ~187k gas to deployment
+(+1,208 bytes): the `_strikes` mapping, `strikeAttester` /
+`clearStrikes` / `strikes` / `isSuspended` plus two events, the
+`AttesterSuspended` guard in `_attest`, the strike deduction in
+`attesterWeight`, and the two extra `AttesterStats` fields.
+`strikeAttester` is a single-slot update (~35k gas avg, first strike
+in a test ~46k); `clearStrikes` is a single-slot reset (~22k gas
+avg). Every `attest` now pays one extra storage read for the
+suspension check — the average barely moves (376,036 → 373,236)
+because the new strike tests add cheap re-attest calls to the mix;
+the per-call cost of the check itself is a cold/warm SLOAD, not a
+write. Suspended attestations revert before any state change, so a
+blocked call costs only the 21k-gas base plus the checks.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
 | --- | --- | --- | --- | --- | --- |
-| `attest` | 22,317 | 376,036 | 386,055 | 520,967 | 125 |
-| `attestWithEvidence` | 244,467 | 483,078 | 541,383 | 541,383 | 10 |
-| `attestBatchWithEvidence` | 544,742 | 746,406 | 746,406 | 948,071 | 2 |
-| `setEvidence` | 24,234 | 38,691 | 33,377 | 55,132 | 8 |
-| `setVerifiedAttester` | 21,927 | 36,947 | 45,796 | 45,796 | 13 |
-| `setExpiryDuration` | 21,686 | 26,707 | 27,754 | 27,766 | 15 |
-| `disputeAttestation` | 26,222 | 103,062 | 102,690 | 191,562 | 19 |
-| `revokeAttestation` | 23,678 | 75,552 | 80,471 | 151,371 | 12 |
-| `resolveDispute` | 26,231 | 117,124 | 140,249 | 238,124 | 11 |
-| `expireDispute` | 26,048 | 66,549 | 30,421 | 142,106 | 6 |
-| `getScore` (view) | 3,311 | 18,812 | 16,674 | 30,388 | 44 |
-| `getScoreByCategory` (view) | 23,421 | 24,821 | 24,816 | 26,232 | 4 |
-| `getScoreHistory` (view) | 3,166 | 20,714 | 22,090 | 49,983 | 14 |
-| `getAttestationsByCategory` (view) | 3,029 | 36,115 | 41,552 | 57,268 | 10 |
-| `latestScoreSnapshot` (view) | 3,215 | 10,655 | 12,144 | 12,144 | 6 |
-| `attesterWeight` (view) | 5,383 | 18,959 | 18,593 | 27,949 | 13 |
-| `decayFactorBps` (view) | 553 | 680 | 728 | 742 | 7 |
-| `decayFactorBpsAt` (view) | 636 | 755 | 805 | 825 | 6 |
-| `getScoreAt` (view) | 10,074 | 17,117 | 16,592 | 25,839 | 15 |
-| `getScoreByCategoryAt` (view) | 24,878 | 24,878 | 24,878 | 24,878 | 2 |
-| `getProfileAt` (view) | 47,389 | 47,389 | 47,389 | 47,389 | 1 |
-| `tierOfAt` (view) | 31,139 | 33,731 | 34,971 | 35,084 | 3 |
+| `attest` | 22,339 | 373,236 | 388,692 | 523,600 | 143 |
+| `attestWithEvidence` | 247,078 | 485,689 | 543,994 | 543,994 | 10 |
+| `attestBatchWithEvidence` | 547,375 | 749,345 | 749,345 | 951,315 | 2 |
+| `setEvidence` | 24,256 | 38,713 | 33,399 | 55,154 | 8 |
+| `setVerifiedAttester` | 21,949 | 38,149 | 45,818 | 45,818 | 15 |
+| `strikeAttester` | 21,677 | 35,135 | 28,697 | 45,797 | 43 |
+| `clearStrikes` | 21,697 | 22,433 | 21,902 | 23,333 | 5 |
+| `setExpiryDuration` | 21,708 | 26,729 | 27,776 | 27,788 | 15 |
+| `disputeAttestation` | 26,178 | 112,460 | 102,642 | 245,994 | 21 |
+| `revokeAttestation` | 23,678 | 89,316 | 80,473 | 272,153 | 15 |
+| `resolveDispute` | 26,275 | 127,249 | 140,289 | 238,172 | 12 |
+| `expireDispute` | 26,070 | 66,570 | 30,443 | 142,124 | 6 |
+| `getScore` (view) | 3,307 | 18,616 | 16,507 | 30,384 | 48 |
+| `getScoreByCategory` (view) | 23,352 | 24,996 | 24,747 | 26,163 | 5 |
+| `getScoreHistory` (view) | 3,161 | 20,744 | 22,123 | 50,073 | 14 |
+| `getAttestationsByCategory` (view) | 3,007 | 36,093 | 41,530 | 57,246 | 10 |
+| `latestScoreSnapshot` (view) | 3,193 | 10,633 | 12,122 | 12,122 | 6 |
+| `attesterWeight` (view) | 2,654 | 18,582 | 20,958 | 30,314 | 24 |
+| `attesterStats` (view) | 5,368 | 10,083 | 12,441 | 12,441 | 3 |
+| `decayFactorBps` (view) | 619 | 746 | 794 | 808 | 7 |
+| `decayFactorBpsAt` (view) | 614 | 733 | 783 | 803 | 6 |
+| `getScoreAt` (view) | 10,096 | 17,139 | 16,614 | 25,861 | 15 |
+| `getScoreByCategoryAt` (view) | 24,874 | 24,874 | 24,874 | 24,874 | 2 |
+| `getProfileAt` (view) | 47,411 | 47,411 | 47,411 | 47,411 | 1 |
+| `tierOfAt` (view) | 31,117 | 33,709 | 34,949 | 35,062 | 3 |
 | `getLeaderboard` (view) | 3,134 | 38,865 | 40,049 | 60,143 | 13 |
 | `getLeaderboardByCategory` (view) | 37,573 | 71,266 | 70,875 | 128,670 | 6 |
 
