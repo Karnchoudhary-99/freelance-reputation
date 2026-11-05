@@ -1070,9 +1070,14 @@ contract ReputationRegistry {
     ///         consistently well-rated one.
     function attesterWeight(address attester) public view returns (uint8) {
         Score memory s = _score(_subjectAttestations[attester], Category.Overall, false);
-        if (s.average >= 8000) return 3;
-        if (s.average >= 5000) return 2;
-        return 1;
+        uint8 weight;
+        if (s.average >= 8000) weight = 3;
+        else if (s.average >= 5000) weight = 2;
+        else weight = 1;
+        if (_verifiedAttesters[attester] && weight < MAX_WEIGHT) {
+            weight += 1;
+        }
+        return weight;
     }
 
     function _score(
