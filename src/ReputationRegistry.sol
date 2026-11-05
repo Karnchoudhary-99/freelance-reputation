@@ -1155,6 +1155,11 @@ contract ReputationRegistry {
     ///         full historical reconstruction — a revocation or dispute
     ///         that happened after `when` is not rewound. For a future
     ///         `when` the result is exact, given the records as they are.
+    ///         Expired attestations are excluded the same way: a record
+    ///         whose last update plus the expiry duration is at or
+    ///         before `when` has faded out by then (and a re-attestation
+    ///         after `when` does not revive it in the preview, because
+    ///         the record's current `updatedAt` is what the check reads).
     function _scoreAt(
         uint256[] storage ids,
         Category category,
@@ -1167,6 +1172,7 @@ contract ReputationRegistry {
             if (a.revoked) continue;
             if (a.disputed) continue;
             if (a.createdAt > when) continue;
+            if (_isExpiredAt(a, when)) continue;
             if (filterCategory && a.category != category) continue;
             // Fixed-point decay: multiply before dividing so a weight-1
             // attestation at quarter weight still counts (2500 bps), instead
