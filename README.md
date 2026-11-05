@@ -355,7 +355,7 @@ per-function gas (deploy 3,306,783 gas, 15,299 bytes runtime).
 ### Run it
 
 ```sh
-forge test          # 127 tests (120 unit + 7 invariants)
+forge test          # 136 tests (129 unit + 7 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 

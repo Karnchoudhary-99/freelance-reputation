@@ -3,8 +3,8 @@
 Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 200 runs), from the unit suites in `test/ReputationRegistry.t.sol`,
 `test/ScoreHistory.t.sol`, `test/ScorePreview.t.sol`,
-`test/Evidence.t.sol`, `test/VerifiedAttesters.t.sol`, and
-`test/AttestationExpiry.t.sol`.
+`test/Evidence.t.sol`, `test/VerifiedAttesters.t.sol`,
+`test/AttestationExpiry.t.sol`, and `test/CategoryReads.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -13,8 +13,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 3,823,180 gas |
-| Runtime size | 17,298 bytes |
+| Deployment cost | 4,091,717 gas |
+| Runtime size | 18,538 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -55,11 +55,20 @@ category-scoped reads move by a few thousand gas; the check is pure
 arithmetic on already-loaded records, so the cost stays linear in
 attestation count with no new storage writes.
 
+Category reads + latest snapshot added ~269k gas to deployment
+(+1,240 bytes): two pure view functions, so no write path changes —
+`attest`'s average moves only because the new tests add calls with a
+different shape (366,199 → 376,036 across the wider call mix).
+`getAttestationsByCategory` averages ~36k gas (it scans the subject's
+full history twice: once to count, once to collect the page);
+`latestScoreSnapshot` is a single storage read at ~11k gas. Both are
+views for off-chain `eth_call`, not transaction inputs.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
 | --- | --- | --- | --- | --- | --- |
-| `attest` | 22,317 | 366,199 | 386,055 | 520,967 | 106 |
+| `attest` | 22,317 | 376,036 | 386,055 | 520,967 | 125 |
 | `attestWithEvidence` | 244,467 | 483,078 | 541,383 | 541,383 | 10 |
 | `attestBatchWithEvidence` | 544,742 | 746,406 | 746,406 | 948,071 | 2 |
 | `setEvidence` | 24,234 | 38,691 | 33,377 | 55,132 | 8 |
@@ -69,9 +78,11 @@ attestation count with no new storage writes.
 | `revokeAttestation` | 23,678 | 75,552 | 80,471 | 151,371 | 12 |
 | `resolveDispute` | 26,231 | 117,124 | 140,249 | 238,124 | 11 |
 | `expireDispute` | 26,048 | 66,549 | 30,421 | 142,106 | 6 |
-| `getScore` (view) | 3,289 | 18,625 | 16,652 | 30,366 | 43 |
+| `getScore` (view) | 3,311 | 18,812 | 16,674 | 30,388 | 44 |
 | `getScoreByCategory` (view) | 23,421 | 24,821 | 24,816 | 26,232 | 4 |
 | `getScoreHistory` (view) | 3,166 | 20,714 | 22,090 | 49,983 | 14 |
+| `getAttestationsByCategory` (view) | 3,029 | 36,115 | 41,552 | 57,268 | 10 |
+| `latestScoreSnapshot` (view) | 3,215 | 10,655 | 12,144 | 12,144 | 6 |
 | `attesterWeight` (view) | 5,383 | 18,959 | 18,593 | 27,949 | 13 |
 | `decayFactorBps` (view) | 553 | 680 | 728 | 742 | 7 |
 | `decayFactorBpsAt` (view) | 636 | 755 | 805 | 825 | 6 |
