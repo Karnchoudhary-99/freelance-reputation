@@ -720,6 +720,29 @@ contract ReputationRegistry {
         return out;
     }
 
+    /// @notice The most recent snapshot of a subject's score in one
+    ///         scope, plus whether any history exists at all — the
+    ///         one-call version of reading the last page of
+    ///         `getScoreHistory`. `exists` is false (and the snapshot
+    ///         all zeros) for a subject/category with no recorded
+    ///         changes. Like every snapshot, the result is frozen at
+    ///         the last state change: after time passes (decay, expiry)
+    ///         it can differ from the live score, which is the point —
+    ///         it answers "what was the score after the last change",
+    ///         not "what is it now".
+    function latestScoreSnapshot(
+        address subject,
+        Category category
+    )
+        external
+        view
+        returns (ScoreSnapshot memory snapshot, bool exists)
+    {
+        ScoreSnapshot[] storage snapshots = _scoreHistory[subject][category];
+        if (snapshots.length == 0) return (snapshot, false);
+        return (snapshots[snapshots.length - 1], true);
+    }
+
     /// @notice All attestations for a subject, revoked ones included
     ///         (check `revoked` to tell them apart).
     function getAttestations(
