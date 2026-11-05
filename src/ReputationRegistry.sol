@@ -144,6 +144,12 @@ contract ReputationRegistry {
         address indexed attester,
         address indexed subject
     );
+    event EvidenceUpdated(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject,
+        bytes32 evidenceHash
+    );
     event DisputeRaised(
         uint256 indexed id,
         address indexed attester,
@@ -251,6 +257,22 @@ contract ReputationRegistry {
         bytes32 evidenceHash
     ) external returns (uint256 id) {
         return _attest(msg.sender, subject, category, score, commentHash, evidenceHash, true);
+    }
+
+    /// @notice Attach or replace the evidence hash on one of your own
+    ///         attestations — for evidence that only exists after the
+    ///         work is delivered, or to correct a hash attached in error.
+    ///         Only the attester may do this, and only while the record is
+    ///         active: a revoked attestation is a frozen audit record.
+    ///         Evidence is metadata only; changing it never touches the
+    ///         score, the decay clock, or the score history.
+    function setEvidence(uint256 id, bytes32 evidenceHash) external {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        Attestation storage a = _attestations[id];
+        if (a.attester != msg.sender) revert NotAttester();
+        if (a.revoked) revert AlreadyRevoked();
+        a.evidenceHash = evidenceHash;
+        emit EvidenceUpdated(id, msg.sender, a.subject, evidenceHash);
     }
 
     /// @notice Attest many subjects/categories in one transaction — the
