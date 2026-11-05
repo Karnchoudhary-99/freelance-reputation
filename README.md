@@ -18,6 +18,7 @@ that travel with the worker, not the platform.
 - [x] Score history (on-chain snapshots per state change, paginated reads)
 - [x] Score preview (decay-preview views: score/profile/tier as of any time)
 - [x] Attestation evidence (evidence hash per attestation, batch + late attach)
+- [x] Verified attesters (owner-managed registry, +1 snapshot weight, capped at 3)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -127,6 +128,24 @@ relayer (a platform backend, a friend) submits it:
 - `attesterStats(attester)` — `{given, active, revoked, disputed}`: the
   attester's track record. A client deciding whether to trust an
   endorsement can weigh the attester, not just the score.
+
+### Verified attesters
+
+The deployer is the registry `owner` and may mark attesters verified with
+`setVerifiedAttester(attester, verified)` (emits `AttesterVerified`);
+`isVerifiedAttester(attester)` reads the flag. Verification is a trust
+signal the owner vouches for — a platform's KYC'd clients, a DAO's voted
+members — and it boosts the weight of the attester's *next* attestations:
+`attesterWeight` adds 1 for a verified attester, capped at 3. A verified
+newcomer counts as much as a mid-reputation attester (1 → 2), a verified
+mid-reputation attester counts as a top one (2 → 3), but verification
+alone can never outrank a consistently well-rated attester (3 stays 3).
+
+The boost is snapshotted onto each attestation at attest time, so
+verifying or un-verifying someone never rewrites existing records — only
+later attestations (including re-attests, batch, and signed ones) pick up
+the new weight. There is no admin key over scores: the owner can only
+toggle the trust flag, never edit or delete an attestation.
 
 ### Reputation tiers
 
@@ -288,7 +307,7 @@ per-function gas (deploy 3,306,783 gas, 15,299 bytes runtime).
 ### Run it
 
 ```sh
-forge test          # 84 tests (77 unit + 7 invariants)
+forge test          # 112 tests (105 unit + 7 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 

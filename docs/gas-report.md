@@ -2,8 +2,8 @@
 
 Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 200 runs), from the unit suites in `test/ReputationRegistry.t.sol`,
-`test/ScoreHistory.t.sol`, `test/ScorePreview.t.sol`, and
-`test/Evidence.t.sol`.
+`test/ScoreHistory.t.sol`, `test/ScorePreview.t.sol`,
+`test/Evidence.t.sol`, and `test/VerifiedAttesters.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -12,8 +12,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 3,525,306 gas |
-| Runtime size | 16,040 bytes |
+| Deployment cost | 3,646,848 gas |
+| Runtime size | 16,586 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -34,28 +34,37 @@ event. `attestWithEvidence` costs about the same as `attest` (same
 writes plus one extra slot); `setEvidence` is a single-slot update
 (~39k gas avg).
 
+Verified attesters added ~122k gas to deployment (+546 bytes): the
+immutable `owner`, the `_verifiedAttesters` mapping, the
+`setVerifiedAttester` / `isVerifiedAttester` pair plus its event, and
+the +1 branch in `attesterWeight`. `setVerifiedAttester` is a
+single-slot update (~37k gas avg); `attest`'s average rises slightly
+(357,290 → 361,828) because `_attest` reads the verification flag on
+every call.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
 | --- | --- | --- | --- | --- | --- |
-| `attest` | 22,317 | 357,290 | 381,206 | 515,506 | 79 |
-| `attestWithEvidence` | 238,961 | 477,572 | 535,877 | 535,877 | 10 |
-| `attestBatchWithEvidence` | 539,341 | 739,663 | 739,663 | 939,985 | 2 |
-| `setEvidence` | 24,211 | 38,668 | 33,354 | 55,109 | 8 |
+| `attest` | 22,317 | 361,828 | 383,446 | 517,746 | 91 |
+| `attestWithEvidence` | 241,201 | 479,812 | 538,117 | 538,117 | 10 |
+| `attestBatchWithEvidence` | 541,559 | 742,001 | 742,001 | 942,443 | 2 |
+| `setEvidence` | 24,189 | 38,646 | 33,332 | 55,087 | 8 |
+| `setVerifiedAttester` | 21,949 | 36,967 | 45,815 | 45,815 | 13 |
 | `disputeAttestation` | 26,244 | 103,936 | 100,101 | 188,361 | 17 |
-| `revokeAttestation` | 23,677 | 74,873 | 80,479 | 148,767 | 11 |
-| `resolveDispute` | 26,201 | 113,094 | 128,657 | 234,870 | 10 |
+| `revokeAttestation` | 23,700 | 74,889 | 80,493 | 148,781 | 11 |
+| `resolveDispute` | 26,231 | 113,122 | 128,687 | 234,900 | 10 |
 | `expireDispute` | 26,048 | 65,678 | 30,421 | 139,494 | 6 |
-| `getScore` (view) | 3,270 | 17,462 | 20,565 | 27,123 | 30 |
+| `getScore` (view) | 3,315 | 17,282 | 18,897 | 27,168 | 32 |
 | `getScoreByCategory` (view) | 20,201 | 21,601 | 21,596 | 23,012 | 4 |
-| `getScoreHistory` (view) | 3,210 | 20,758 | 22,134 | 50,027 | 14 |
-| `attesterWeight` (view) | 3,150 | 16,072 | 15,138 | 22,481 | 7 |
-| `decayFactorBps` (view) | 578 | 705 | 753 | 767 | 7 |
-| `decayFactorBpsAt` (view) | 702 | 821 | 871 | 891 | 6 |
-| `getScoreAt` (view) | 10,055 | 15,507 | 13,973 | 22,596 | 13 |
+| `getScoreHistory` (view) | 3,166 | 20,714 | 22,090 | 49,983 | 14 |
+| `attesterWeight` (view) | 5,390 | 16,922 | 16,100 | 24,732 | 13 |
+| `decayFactorBps` (view) | 579 | 706 | 754 | 768 | 7 |
+| `decayFactorBpsAt` (view) | 658 | 777 | 827 | 847 | 6 |
+| `getScoreAt` (view) | 10,078 | 15,530 | 13,996 | 22,619 | 13 |
 | `getScoreByCategoryAt` (view) | 21,698 | 21,698 | 21,698 | 21,698 | 2 |
-| `getProfileAt` (view) | 39,313 | 39,313 | 39,313 | 39,313 | 1 |
-| `tierOfAt` (view) | 27,852 | 30,036 | 31,072 | 31,185 | 3 |
+| `getProfileAt` (view) | 39,269 | 39,269 | 39,269 | 39,269 | 1 |
+| `tierOfAt` (view) | 27,941 | 30,125 | 31,161 | 31,274 | 3 |
 | `getLeaderboard` (view) | 3,134 | 38,865 | 40,049 | 60,143 | 13 |
 | `getLeaderboardByCategory` (view) | 37,573 | 71,266 | 70,875 | 128,670 | 6 |
 
