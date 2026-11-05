@@ -120,4 +120,98 @@ contract AttestationExpiryTest is Test {
         assertEq(s.count, 1);
         assertEq(s.average, 9000);
     }
+
+    function testReAttestRevivesExpiredRecord() public {
+        registry.setExpiryDuration(10 days);
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 60, bytes32("c1"));
+        vm.warp(block.timestamp + 10 days);
+        assertTrue(registry.isExpired(0));
+        assertEq(registry.getScore(alice).count, 0);
+
+        // Re-attesting updates the same record in place and refreshes
+        // the expiry clock: the endorsement is live again.
+        vm.prank(bob);
+        uint256 id = registry.attest(alice, ReputationRegistry.Category.Overall, 80, bytes32("c2"));
+        assertEq(id, 0);
+        assertFalse(registry.isExpired(0));
+        ReputationRegistry.Score memory s = registry.getScore(alice);
+        assertEq(s.count, 1);
+        assertEq(s.average, 8000);
+        assertEq(registry.expiresAt(0), uint64(block.timestamp) + 10 days);
+    }
+
+    function testOnlyOwnerCanSetExpiryDuration() public {
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.NotOwner.selector);
+        registry.setExpiryDuration(10 days);
+        assertEq(registry.expiryDuration(), 730 days);
+    }
+
+    function testExpiryDurationUpdatedEvent() public {
+        vm.expectEmit(false, false, false, true, address(registry));
+        emit ReputationRegistry.ExpiryDurationUpdated(30 days);
+        registry.setExpiryDuration(30 days);
+        assertEq(registry.expiryDuration(), 30 days);
+    }
+
+    function testDisputeExpiredAttestationReverts() public {
+        registry.setExpiryDuration(10 days);
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 90, bytes32("c1"));
+        vm.warp(block.timestamp + 10 days);
+
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.AttestationExpired.selector);
+        registry.disputeAttestation(0, bytes32("unfair"));
+    }
+
+    function testShorteningDurationExpiresOldRecordsImmediately() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 90, bytes32("c1"));
+        vm.warp(block.timestamp + 5 days);
+        assertFalse(registry.isExpired(0));
+
+        // The record is 5 days old; a 1-day duration expires it at once.
+        registry.setExpiryDuration(1 days);
+        assertTrue(registry.isExpired(0));
+        assertEq(registry.getScore(alice).count, 0);
+    }
+
+    function testRevokingExpiredRecordStaysAllowed() public {
+        registry.setExpiryDuration(10 days);
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 90, bytes32("c1"));
+        vm.warp(block.timestamp + 10 days);
+
+        vm.prank(bob);
+        registry.revokeAttestation(0);
+        assertTrue(registry.attestation(0).revoked);
+
+        // And a fresh attestation afterwards creates a new record.
+        vm.prank(bob);
+        uint256 id = registry.attest(alice, ReputationRegistry.Category.Overall, 70, bytes32("c2"));
+        assertEq(id, 1);
+        assertEq(registry.getScore(alice).count, 1);
+    }
+
+    function testDisputeThatExpiresMidFlightCanStillResolve() public {
+        registry.setExpiryDuration(10 days);
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 90, bytes32("c1"));
+        vm.prank(alice);
+        registry.disputeAttestation(0, bytes32("unfair"));
+
+        // The dispute window (30 days) outlasts the expiry (10 days):
+        // the record is both disputed and expired now.
+        vm.warp(block.timestamp + 11 days);
+        assertTrue(registry.isExpired(0));
+
+        // Upholding re-confirms it: the clock refreshes and it counts again.
+        vm.prank(bob);
+        registry.resolveDispute(0, true);
+        assertFalse(registry.isExpired(0));
+        assertFalse(registry.attestation(0).disputed);
+        assertEq(registry.getScore(alice).count, 1);
+    }
 }
