@@ -19,6 +19,7 @@ that travel with the worker, not the platform.
 - [x] Score preview (decay-preview views: score/profile/tier as of any time)
 - [x] Attestation evidence (evidence hash per attestation, batch + late attach)
 - [x] Verified attesters (owner-managed registry, +1 snapshot weight, capped at 3)
+- [x] Attestation expiry (730-day default, owner-configurable, re-attest revives)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -64,6 +65,32 @@ so a weight-1 attestation at quarter weight still counts instead of
 truncating to zero. Re-attesting refreshes the clock, and attester weights
 are read from the same decayed average — a formerly well-rated attester
 whose endorsements all aged out counts as a newcomer again.
+
+### Attestation expiry
+
+Decay fades an old endorsement to a quarter of its weight; expiry finishes
+the job. After `expiryDuration` (730 days by default) from an
+attestation's last update, the record stops counting toward every score —
+tiers fall, leaderboards drop the subject — until the attester re-attests
+and refreshes the clock. The expired record stays readable and revocable
+on-chain; only its effect on scores ends.
+
+- `expiryDuration()` — current duration in seconds; the owner changes it
+  with `setExpiryDuration(duration)` (emits `ExpiryDurationUpdated`).
+  `0` disables expiry entirely, and disabling it revives every expired
+  record at once. Shortening the duration can expire old records
+  immediately; the change applies to every record from its own last
+  update and never rewrites records.
+- `expiresAt(id)` / `isExpired(id)` — when a record stops counting, and
+  whether it already has (`expiresAt` returns `0` while expiry is
+  disabled).
+- An expired attestation cannot be disputed — it already counts toward no
+  score. Revoking one stays allowed, and a dispute that expires
+  mid-flight can still resolve: upholding it refreshes the clock and
+  revives the record.
+- The score-preview views (`getScoreAt`, `getProfileAt`, `tierOfAt`)
+  reflect expiry too: a preview past a record's expiry date shows it
+  faded out.
 
 ### Disputes
 
