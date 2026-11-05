@@ -21,6 +21,7 @@ that travel with the worker, not the platform.
 - [x] Verified attesters (owner-managed registry, +1 snapshot weight, capped at 3)
 - [x] Attestation expiry (730-day default, owner-configurable, re-attest revives)
 - [x] Category reads + latest snapshot (paginated per-category attestations, one-call latest snapshot)
+- [x] Attester strikes & suspension (owner-managed strikes, -1 weight each, 3 strikes suspends)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -153,7 +154,7 @@ relayer (a platform backend, a friend) submits it:
   view of what one client has endorsed, with the same empty-page
   semantics as the subject-side pagination. Updates do not add records,
   so the index counts attestations, not writes.
-- `attesterStats(attester)` — `{given, active, revoked, disputed}`: the
+- `attesterStats(attester)` — `{given, active, revoked, disputed, strikes, suspended}`: the
   attester's track record. A client deciding whether to trust an
   endorsement can weigh the attester, not just the score.
 
@@ -174,6 +175,31 @@ verifying or un-verifying someone never rewrites existing records — only
 later attestations (including re-attests, batch, and signed ones) pick up
 the new weight. There is no admin key over scores: the owner can only
 toggle the trust flag, never edit or delete an attestation.
+
+### Attester strikes & suspension
+
+The other side of verification: the owner may strike a misbehaving
+attester — fake endorsements, spam, paid reviews — with
+`strikeAttester(attester)` (emits `AttesterStruck(attester, strikes)`).
+Each strike lowers the weight of the attester's *next* attestations by 1,
+floored at 1, so one strike takes a verified newcomer back to 1 and two
+strikes take a top attester (3) to 1. At 3 strikes (`MAX_STRIKES`) the
+attester is suspended: `attesterWeight` returns 0 and every attestation
+path — direct, re-attest, batch, and signed — reverts with
+`AttesterSuspended`. `strikes(attester)` and `isSuspended(attester)` read
+the state; `clearStrikes(attester)` (emits `StrikesCleared`) resets the
+count to 0 and reinstates the attester at their un-struck weight. Strikes
+keep counting past the threshold (a fourth offence is still an offence);
+only clearing resets them, and the owner may strike an attester who has
+never attested yet, acting on an off-chain report before they write
+anything on-chain.
+
+Like verification, strikes are snapshot-time only: they never rewrite
+existing records, and a suspended attester's past scores keep counting.
+Suspension blocks only *new* attestations — a suspended attester may
+still revoke their own attestations and resolve disputes over them, so
+enforcement never traps a subject in an unresolvable dispute. Only the
+owner may strike or clear; both functions reject the zero address.
 
 ### Reputation tiers
 
@@ -338,19 +364,21 @@ alice score = (60*3 + 90*1) / 4 = 67.50
 
 `test/Invariant.t.sol` drives the registry through attest / revoke /
 dispute / resolve / expire cycles plus time warps (crossing the 90-day
-and 365-day decay tiers and the 30-day dispute window) with a guarded
-handler, so every handler call is expected to succeed and a revert can
-never mask a broken invariant. Seven invariants hold across every run:
+and 365-day decay tiers and the 30-day dispute window) and owner strikes
+/ strike-clearing, with a guarded handler, so every handler call is
+expected to succeed and a revert can never mask a broken invariant. Eight
+invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
 recomputed independently from the raw records, no duplicate active
-(attester, category) keys, record ranges plus attestation totals, and
-the latest score-history snapshot matching the live score whenever no
+(attester, category) keys, record ranges plus attestation totals, the
+latest score-history snapshot matching the live score whenever no
 time has passed since the last change touching that scope (a warp ages
 every attestation, so snapshots drift from live scores by design after
-one). Baseline: 7 invariants × 256 runs × depth 100 — 25,600 handler calls
+one), and the strike mirror matching the registry with `attesterWeight`
+0 exactly while suspended and 1–3 otherwise. Baseline: 8 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 3,306,783 gas, 15,299 bytes runtime).
+per-function gas (deploy 4,278,345 gas, 19,746 bytes runtime).
 
 ### Run it
 

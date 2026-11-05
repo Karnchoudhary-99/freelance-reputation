@@ -35,6 +35,13 @@ pragma solidity 0.8.24;
 ///      attestation carries +1 snapshot weight, capped at 3, so
 ///      established clients count a little more. Verification is a
 ///      snapshot-time boost only — it never rewrites existing records.
+///      The owner may also strike a misbehaving attester (fake
+///      endorsements, spam, paid reviews): each strike lowers the
+///      weight of the attester's next attestations by 1, floored at 1,
+///      and at 3 strikes the attester is suspended and cannot attest
+///      at all until the owner clears the strikes. Strikes are
+///      snapshot-time only, like verification — existing records and
+///      scores are never rewritten.
 contract ReputationRegistry {
     enum Category {
         Overall,
@@ -145,6 +152,7 @@ contract ReputationRegistry {
     error InvalidSignature();
     error NotOwner();
     error AttestationExpired();
+    error AttesterSuspended();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -190,10 +198,16 @@ contract ReputationRegistry {
         address indexed subject
     );
     event AttesterVerified(address indexed attester, bool verified);
+    event AttesterStruck(address indexed attester, uint256 strikes);
+    event StrikesCleared(address indexed attester);
     event ExpiryDurationUpdated(uint64 expiryDuration);
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
+
+    /// @notice Strikes at which an attester is suspended: they may not
+    ///         attest (or re-attest) until the owner clears the strikes.
+    uint256 public constant MAX_STRIKES = 3;
 
     /// @notice Decay tiers, in basis points of the snapshot weight.
     uint256 public constant DECAY_FULL_BPS = 10000; // first 90 days
@@ -232,6 +246,10 @@ contract ReputationRegistry {
     /// @notice Verified attesters, set by the owner (see
     ///         `setVerifiedAttester`).
     mapping(address => bool) private _verifiedAttesters;
+
+    /// @notice Strikes per attester, set by the owner (see
+    ///         `strikeAttester`). Three strikes suspends the attester.
+    mapping(address => uint256) private _strikes;
 
     /// @notice Next usable nonce per attester (replay protection).
     mapping(address => uint256) public nonces;
@@ -481,6 +499,7 @@ contract ReputationRegistry {
         if (subject == address(0)) revert ZeroAddress();
         if (subject == attester) revert SelfAttestation();
         if (score > MAX_SCORE) revert InvalidScore();
+        if (_strikes[attester] >= MAX_STRIKES) revert AttesterSuspended();
 
         uint8 weight = attesterWeight(attester);
         bytes32 key = _key(attester, subject, category);
@@ -855,6 +874,8 @@ contract ReputationRegistry {
         uint256 active;
         uint256 revoked;
         uint256 disputed;
+        uint256 strikes;
+        bool suspended;
     }
 
     function attesterStats(
@@ -872,6 +893,8 @@ contract ReputationRegistry {
                 stats.active++;
             }
         }
+        stats.strikes = _strikes[attester];
+        stats.suspended = stats.strikes >= MAX_STRIKES;
     }
 
     /// @notice Human-readable reputation tiers, from the overall score
@@ -1139,6 +1162,48 @@ contract ReputationRegistry {
         emit AttesterVerified(attester, verified);
     }
 
+    /// @notice Strike a misbehaving attester — fake endorsements, spam,
+    ///         paid reviews. Only the owner may call this. Each strike
+    ///         lowers the weight of the attester's next attestations by
+    ///         1 (see `attesterWeight`); at 3 strikes the attester is
+    ///         suspended and cannot attest until the owner clears the
+    ///         strikes. Strikes keep counting past the suspension
+    ///         threshold (a fourth offence is still an offence); only
+    ///         `clearStrikes` resets the count. Existing records are
+    ///         never rewritten — strikes are snapshot-time only, like
+    ///         verification, so a suspended attester's past scores keep
+    ///         counting. A suspended attester may still revoke their own
+    ///         attestations and resolve disputes over them; only new
+    ///         attestations are blocked.
+    function strikeAttester(address attester) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (attester == address(0)) revert ZeroAddress();
+        _strikes[attester] += 1;
+        emit AttesterStruck(attester, _strikes[attester]);
+    }
+
+    /// @notice Clear every strike on an attester, reinstating them:
+    ///         they may attest again, at their un-struck weight. Only
+    ///         the owner may call this. Clearing never touches the
+    ///         attester's records — only future attestations change.
+    function clearStrikes(address attester) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (attester == address(0)) revert ZeroAddress();
+        _strikes[attester] = 0;
+        emit StrikesCleared(attester);
+    }
+
+    /// @notice How many strikes an attester currently holds.
+    function strikes(address attester) external view returns (uint256) {
+        return _strikes[attester];
+    }
+
+    /// @notice Whether an attester is suspended (3+ strikes) and
+    ///         therefore cannot attest until the owner clears them.
+    function isSuspended(address attester) external view returns (bool) {
+        return _strikes[attester] >= MAX_STRIKES;
+    }
+
     /// @notice Whether an attester is currently verified.
     function isVerifiedAttester(
         address attester
@@ -1195,8 +1260,13 @@ contract ReputationRegistry {
     ///         A verified attester gets +1 on top, capped at 3: a newcomer
     ///         the owner vouches for counts as much as a mid-reputation
     ///         attester, but verification alone can never outrank a
-    ///         consistently well-rated one.
+    ///         consistently well-rated one. Each strike then lowers the
+    ///         weight by 1, floored at 1, so one strike takes a verified
+    ///         newcomer back to 1 and two strikes take a top attester to
+    ///         1. A suspended attester (3+ strikes) weighs 0: they cannot
+    ///         attest at all until the owner clears the strikes.
     function attesterWeight(address attester) public view returns (uint8) {
+        if (_strikes[attester] >= MAX_STRIKES) return 0;
         Score memory s = _score(_subjectAttestations[attester], Category.Overall, false);
         uint8 weight;
         if (s.average >= 8000) weight = 3;
@@ -1204,6 +1274,13 @@ contract ReputationRegistry {
         else weight = 1;
         if (_verifiedAttesters[attester] && weight < MAX_WEIGHT) {
             weight += 1;
+        }
+        uint256 strikeCount = _strikes[attester];
+        if (strikeCount > 0) {
+            uint256 reduced = uint256(weight) > strikeCount
+                ? uint256(weight) - strikeCount
+                : 1;
+            weight = uint8(reduced);
         }
         return weight;
     }

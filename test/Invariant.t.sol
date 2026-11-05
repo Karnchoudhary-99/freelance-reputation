@@ -5,14 +5,16 @@ import {Test} from "forge-std/Test.sol";
 import {ReputationRegistry} from "../src/ReputationRegistry.sol";
 
 /// @notice Fuzz handler driving the registry through attest / revoke /
-///         dispute / resolve / expire cycles plus time warps.
+///         dispute / resolve / expire cycles plus time warps, with
+///         owner strikes and strike-clearing mixed in.
 /// @dev Every action is guarded to the state it is legal in, so a revert
 ///      can never mask a broken invariant: if the handler calls the
 ///      contract, the call is expected to succeed. Actions that are not
 ///      legal in the current state are no-ops. The handler mirrors the
 ///      registry's per-record flags because the contract exposes no
 ///      key-based lookup; every mutation goes through this handler, so
-///      the mirror cannot drift.
+///      the mirror cannot drift. The handler deploys the registry, so
+///      it is the owner and may strike / clear strikes.
 contract ReputationHandler is Test {
     ReputationRegistry public registry;
     address[] public actors;
@@ -38,9 +40,12 @@ contract ReputationHandler is Test {
     // keccak256(attester, subject, category) => id + 1 (0 == none active)
     mapping(bytes32 => uint256) public activeByKey;
     mapping(address => uint256) public createdFor;
+    // Strikes per actor, mirrored so attest() never calls as a
+    // suspended attester (that would revert and mask an invariant).
+    mapping(address => uint256) public strikes;
 
-    constructor(ReputationRegistry _registry, address[] memory _actors) {
-        registry = _registry;
+    constructor(address[] memory _actors) {
+        registry = new ReputationRegistry();
         actors = _actors;
     }
 
@@ -54,6 +59,8 @@ contract ReputationHandler is Test {
 
     function attest(uint256 seed) external {
         address attester = actors[seed % actors.length];
+        // A suspended attester cannot attest (or re-attest).
+        if (strikes[attester] >= registry.MAX_STRIKES()) return;
         // Subject is always a different actor, so self-attestation never fires.
         address subject = actors[(seed / actors.length + 1) % actors.length];
         if (subject == attester) return;
@@ -160,6 +167,24 @@ contract ReputationHandler is Test {
         // decay tiers and the 30-day dispute window in a single run.
         vm.warp(block.timestamp + (seed % 400 days));
     }
+
+    /// @notice Strike one actor: their next attestations weigh less,
+    ///         and at 3 strikes they are suspended until cleared. The
+    ///         handler is the registry owner, so this always succeeds.
+    function strike(uint256 seed) external {
+        address attester = actors[seed % actors.length];
+        registry.strikeAttester(attester);
+        strikes[attester]++;
+    }
+
+    /// @notice Clear one actor's strikes, reinstating them. No-op when
+    ///         they hold no strikes, so the call is always legal.
+    function clearStrikes(uint256 seed) external {
+        address attester = actors[seed % actors.length];
+        if (strikes[attester] == 0) return;
+        registry.clearStrikes(attester);
+        strikes[attester] = 0;
+    }
 }
 /// @notice Score-accounting invariants over the registry lifecycle.
 contract ReputationInvariants is Test {
@@ -168,14 +193,14 @@ contract ReputationInvariants is Test {
     address[] public actors;
 
     function setUp() public {
-        registry = new ReputationRegistry();
         actors.push(makeAddr("alice"));
         actors.push(makeAddr("bob"));
         actors.push(makeAddr("carol"));
         actors.push(makeAddr("dave"));
         actors.push(makeAddr("erin"));
         actors.push(makeAddr("frank"));
-        handler = new ReputationHandler(registry, actors);
+        handler = new ReputationHandler(actors);
+        registry = handler.registry();
         targetContract(address(handler));
     }
 
@@ -299,6 +324,29 @@ contract ReputationInvariants is Test {
             }
         }
         assertEq(summed, handler.created());
+    }
+
+    /// @notice The handler's strike mirror matches the registry, the
+    ///         suspension flag follows the 3-strike threshold, and the
+    ///         snapshot weight is 0 exactly while suspended, 1-3
+    ///         otherwise — strikes never rewrite a stored record, so
+    ///         weights already on-chain stay in range.
+    function invariant_strikes_mirror_and_weight_bounds() public view {
+        for (uint256 i = 0; i < actors.length; i++) {
+            uint256 s = registry.strikes(actors[i]);
+            assertEq(s, handler.strikes(actors[i]));
+            assertEq(
+                registry.isSuspended(actors[i]),
+                s >= registry.MAX_STRIKES()
+            );
+            uint8 w = registry.attesterWeight(actors[i]);
+            if (s >= registry.MAX_STRIKES()) {
+                assertEq(w, 0);
+            } else {
+                assertGe(w, 1);
+                assertLe(w, 3);
+            }
+        }
     }
 
     /// @notice The latest frozen snapshot must equal the live score —
