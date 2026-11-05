@@ -77,4 +77,77 @@ contract EvidenceTest is Test {
         );
         assertEq(registry.attestation(0).evidenceHash, bytes32(0));
     }
+
+    event EvidenceUpdated(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject,
+        bytes32 evidenceHash
+    );
+
+    function testSetEvidenceAttachesLater() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Quality, 90, bytes32("c1"));
+        assertEq(registry.attestation(0).evidenceHash, bytes32(0));
+        vm.prank(bob);
+        registry.setEvidence(0, EVIDENCE_2);
+        assertEq(registry.attestation(0).evidenceHash, EVIDENCE_2);
+    }
+
+    function testSetEvidenceOnlyAttester() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Quality, 90, bytes32("c1"));
+        vm.prank(carol);
+        vm.expectRevert(ReputationRegistry.NotAttester.selector);
+        registry.setEvidence(0, EVIDENCE_1);
+        // The subject may not rewrite the attester's evidence either.
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.NotAttester.selector);
+        registry.setEvidence(0, EVIDENCE_1);
+    }
+
+    function testSetEvidenceUnknownReverts() public {
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.UnknownAttestation.selector);
+        registry.setEvidence(99, EVIDENCE_1);
+    }
+
+    function testSetEvidenceRevokedReverts() public {
+        vm.prank(bob);
+        registry.attestWithEvidence(
+            alice, ReputationRegistry.Category.Quality, 90, bytes32("c1"), EVIDENCE_1
+        );
+        vm.prank(bob);
+        registry.revokeAttestation(0);
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.AlreadyRevoked.selector);
+        registry.setEvidence(0, EVIDENCE_2);
+        // The revoked record keeps its original evidence for the audit trail.
+        assertEq(registry.attestation(0).evidenceHash, EVIDENCE_1);
+    }
+
+    function testSetEvidenceDoesNotTouchScoreOrDecayClock() public {
+        vm.prank(bob);
+        registry.attestWithEvidence(
+            alice, ReputationRegistry.Category.Quality, 90, bytes32("c1"), EVIDENCE_1
+        );
+        uint64 updatedBefore = registry.attestation(0).updatedAt;
+        vm.warp(block.timestamp + 100 days);
+        vm.prank(bob);
+        registry.setEvidence(0, EVIDENCE_2);
+        ReputationRegistry.Attestation memory a = registry.attestation(0);
+        assertEq(a.updatedAt, updatedBefore);
+        assertEq(a.evidenceHash, EVIDENCE_2);
+        // Score still reflects the 100-day decay, unchanged by the edit.
+        assertEq(registry.getScore(alice).average, 9000);
+    }
+
+    function testSetEvidenceEmitsEvent() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Quality, 90, bytes32("c1"));
+        vm.expectEmit(true, true, true, true);
+        emit EvidenceUpdated(0, bob, alice, EVIDENCE_1);
+        vm.prank(bob);
+        registry.setEvidence(0, EVIDENCE_1);
+    }
 }
