@@ -2,7 +2,8 @@
 
 Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 200 runs), from the unit suites in `test/ReputationRegistry.t.sol`,
-`test/ScoreHistory.t.sol`, and `test/ScorePreview.t.sol`.
+`test/ScoreHistory.t.sol`, `test/ScorePreview.t.sol`, and
+`test/Evidence.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -11,8 +12,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 3,306,783 gas |
-| Runtime size | 15,299 bytes |
+| Deployment cost | 3,525,306 gas |
+| Runtime size | 16,040 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -25,23 +26,34 @@ per record) plus five view functions (`getScoreAt`,
 `decayFactorBpsAt`). Writes are unaffected — previews are pure
 reads over the existing records.
 
+Attestation evidence added ~219k gas to deployment (+741 bytes):
+one extra `bytes32` slot on the `Attestation` struct (cold-write cost
+on first attestation), the `attestWithEvidence` /
+`attestBatchWithEvidence` entry points, and `setEvidence` plus its
+event. `attestWithEvidence` costs about the same as `attest` (same
+writes plus one extra slot); `setEvidence` is a single-slot update
+(~39k gas avg).
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
 | --- | --- | --- | --- | --- | --- |
-| `attest` | 22,311 | 348,209 | 378,936 | 513,236 | 74 |
-| `disputeAttestation` | 26,133 | 98,801 | 99,820 | 187,884 | 15 |
-| `revokeAttestation` | 23,677 | 68,181 | 79,300 | 148,392 | 8 |
-| `resolveDispute` | 26,200 | 93,947 | 99,107 | 145,465 | 8 |
-| `expireDispute` | 26,092 | 65,588 | 30,465 | 139,136 | 6 |
-| `getScore` (view) | 3,292 | 18,439 | 22,300 | 27,145 | 26 |
-| `getScoreByCategory` (view) | 19,625 | 20,979 | 20,983 | 22,327 | 4 |
-| `getScoreHistory` (view) | 3,188 | 20,736 | 22,112 | 50,005 | 14 |
-| `attesterWeight` (view) | 2,979 | 15,671 | 14,967 | 21,877 | 7 |
+| `attest` | 22,317 | 357,290 | 381,206 | 515,506 | 79 |
+| `attestWithEvidence` | 238,961 | 477,572 | 535,877 | 535,877 | 10 |
+| `attestBatchWithEvidence` | 539,341 | 739,663 | 739,663 | 939,985 | 2 |
+| `setEvidence` | 24,211 | 38,668 | 33,354 | 55,109 | 8 |
+| `disputeAttestation` | 26,244 | 103,936 | 100,101 | 188,361 | 17 |
+| `revokeAttestation` | 23,677 | 74,873 | 80,479 | 148,767 | 11 |
+| `resolveDispute` | 26,201 | 113,094 | 128,657 | 234,870 | 10 |
+| `expireDispute` | 26,048 | 65,678 | 30,421 | 139,494 | 6 |
+| `getScore` (view) | 3,270 | 17,462 | 20,565 | 27,123 | 30 |
+| `getScoreByCategory` (view) | 20,201 | 21,601 | 21,596 | 23,012 | 4 |
+| `getScoreHistory` (view) | 3,210 | 20,758 | 22,134 | 50,027 | 14 |
+| `attesterWeight` (view) | 3,150 | 16,072 | 15,138 | 22,481 | 7 |
 | `decayFactorBps` (view) | 578 | 705 | 753 | 767 | 7 |
 | `decayFactorBpsAt` (view) | 702 | 821 | 871 | 891 | 6 |
-| `getScoreAt` (view) | 10,077 | 15,529 | 13,995 | 22,618 | 13 |
-| `getScoreByCategoryAt` (view) | 21,720 | 21,720 | 21,720 | 21,720 | 2 |
+| `getScoreAt` (view) | 10,055 | 15,507 | 13,973 | 22,596 | 13 |
+| `getScoreByCategoryAt` (view) | 21,698 | 21,698 | 21,698 | 21,698 | 2 |
 | `getProfileAt` (view) | 39,313 | 39,313 | 39,313 | 39,313 | 1 |
 | `tierOfAt` (view) | 27,852 | 30,036 | 31,072 | 31,185 | 3 |
 | `getLeaderboard` (view) | 3,134 | 38,865 | 40,049 | 60,143 | 13 |
@@ -101,7 +113,12 @@ the page size, not with the subject's total history.
   `tierOfAt` cost one extra scan per scope (~30–39k gas). The only
   added per-record work is the `createdAt <= when` check, which is
   why write costs did not move.
-- **Invariant fuzz baseline:** `test/Invariant.t.sol` runs 7 invariants
+- **Evidence is one extra storage slot:** attaching evidence at
+  attestation time costs no more than a plain attestation on the
+  same path (the extra `bytes32` is written in the same cold slot
+  allocation); `setEvidence` afterwards is a single-slot update
+  (~39k gas). Evidence never triggers a snapshot or score
+  recomputation, so it stays off the expensive paths.
   × 256 runs × depth 100 (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
   baseline; re-run `forge snapshot` after contract changes and diff it.
