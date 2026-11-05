@@ -139,4 +139,55 @@ contract VerifiedAttestersTest is Test {
         assertEq(a.score, 80);
         assertEq(a.weight, 2);
     }
+
+    function testVerifiedWeightFlowsThroughBatchAttest() public {
+        registry.setVerifiedAttester(bob, true);
+        ReputationRegistry.AttestInput[] memory inputs = new ReputationRegistry.AttestInput[](2);
+        inputs[0] = ReputationRegistry.AttestInput({
+            subject: alice,
+            category: ReputationRegistry.Category.Quality,
+            score: 90,
+            commentHash: bytes32("c1")
+        });
+        inputs[1] = ReputationRegistry.AttestInput({
+            subject: carol,
+            category: ReputationRegistry.Category.Timeliness,
+            score: 80,
+            commentHash: bytes32("c2")
+        });
+        vm.prank(bob);
+        registry.attestBatch(inputs);
+        assertEq(registry.attestation(0).weight, 2);
+        assertEq(registry.attestation(1).weight, 2);
+    }
+
+    function testVerifiedWeightFlowsThroughSignedAttest() public {
+        uint256 bobKey = 0xB0B;
+        address signedBob = vm.addr(bobKey);
+        registry.setVerifiedAttester(signedBob, true);
+        uint256 deadline = block.timestamp + 1 days;
+        bytes32 structHash = keccak256(
+            abi.encode(
+                registry.ATTEST_TYPEHASH(),
+                signedBob,
+                alice,
+                ReputationRegistry.Category.Quality,
+                88,
+                bytes32("c1"),
+                0,
+                deadline
+            )
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", registry.DOMAIN_SEPARATOR(), structHash)
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(bobKey, digest);
+        // Relayed by a third party, not by bob himself.
+        vm.prank(carol);
+        registry.attestBySignature(
+            signedBob, alice, ReputationRegistry.Category.Quality, 88, bytes32("c1"), deadline, v, r, s
+        );
+        assertEq(registry.attestation(0).weight, 2);
+        assertEq(registry.attestation(0).attester, signedBob);
+    }
 }
