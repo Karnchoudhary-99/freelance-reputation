@@ -12,6 +12,10 @@ pragma solidity 0.8.24;
 ///      updates the existing record instead of stacking a second one.
 ///      Revoked attestations stay on-chain for auditability but are excluded
 ///      from every score. Averages are scaled by 100 (8750 == 87.50).
+///      An attestation may carry an evidence hash (e.g. a content hash of
+///      the delivered work or invoice) alongside the comment hash, so a
+///      reader can verify what the score was given for without trusting
+///      the attester's word alone.
 ///      Scores decay with age: an attestation counts fully for its first 90
 ///      days, at half weight for the rest of its first year, and at quarter
 ///      weight after that. The decay clock runs from the last update, so a
@@ -36,6 +40,7 @@ contract ReputationRegistry {
         uint8 score; // 0-100
         uint8 weight; // snapshot weight, 1-3
         bytes32 commentHash; // keccak256 of off-chain comment text, or 0
+        bytes32 evidenceHash; // content hash of supporting evidence (deliverable, invoice), or 0
         uint64 createdAt;
         uint64 updatedAt;
         bool revoked;
@@ -57,6 +62,16 @@ contract ReputationRegistry {
         Category category;
         uint8 score;
         bytes32 commentHash;
+    }
+
+    /// @notice One attestation-with-evidence input for a batch call: the
+    ///         same fields as `AttestInput`, plus the evidence hash.
+    struct AttestWithEvidenceInput {
+        address subject;
+        Category category;
+        uint8 score;
+        bytes32 commentHash;
+        bytes32 evidenceHash;
     }
 
     /// @notice One signed attestation input for a relayed batch call: the
@@ -138,6 +153,12 @@ contract ReputationRegistry {
         uint256 indexed id,
         address indexed attester,
         address indexed subject
+    );
+    event EvidenceUpdated(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject,
+        bytes32 evidenceHash
     );
     event DisputeRaised(
         uint256 indexed id,
@@ -227,7 +248,41 @@ contract ReputationRegistry {
         uint8 score,
         bytes32 commentHash
     ) external returns (uint256 id) {
-        return _attest(msg.sender, subject, category, score, commentHash);
+        return _attest(msg.sender, subject, category, score, commentHash, bytes32(0), false);
+    }
+
+    /// @notice Attest with supporting evidence attached: `evidenceHash` is
+    ///         the content hash of the work the score refers to (a
+    ///         deliverable, an invoice, a shipped artifact), so anyone
+    ///         reading the attestation can check the claim against the
+    ///         evidence instead of taking the attester's word for it.
+    ///         Re-attesting with this function replaces the evidence;
+    ///         plain `attest` leaves previously attached evidence untouched.
+    /// @return id The attestation id (stable across updates).
+    function attestWithEvidence(
+        address subject,
+        Category category,
+        uint8 score,
+        bytes32 commentHash,
+        bytes32 evidenceHash
+    ) external returns (uint256 id) {
+        return _attest(msg.sender, subject, category, score, commentHash, evidenceHash, true);
+    }
+
+    /// @notice Attach or replace the evidence hash on one of your own
+    ///         attestations — for evidence that only exists after the
+    ///         work is delivered, or to correct a hash attached in error.
+    ///         Only the attester may do this, and only while the record is
+    ///         active: a revoked attestation is a frozen audit record.
+    ///         Evidence is metadata only; changing it never touches the
+    ///         score, the decay clock, or the score history.
+    function setEvidence(uint256 id, bytes32 evidenceHash) external {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        Attestation storage a = _attestations[id];
+        if (a.attester != msg.sender) revert NotAttester();
+        if (a.revoked) revert AlreadyRevoked();
+        a.evidenceHash = evidenceHash;
+        emit EvidenceUpdated(id, msg.sender, a.subject, evidenceHash);
     }
 
     /// @notice Attest many subjects/categories in one transaction — the
@@ -246,7 +301,29 @@ contract ReputationRegistry {
                 inputs[i].subject,
                 inputs[i].category,
                 inputs[i].score,
-                inputs[i].commentHash
+                inputs[i].commentHash,
+                bytes32(0),
+                false
+            );
+        }
+    }
+
+    /// @notice Batch version of `attestWithEvidence`: attach evidence to
+    ///         many attestations in one transaction, with the same atomicity
+    ///         guarantees as `attestBatch`.
+    function attestBatchWithEvidence(
+        AttestWithEvidenceInput[] calldata inputs
+    ) external returns (uint256[] memory ids) {
+        ids = new uint256[](inputs.length);
+        for (uint256 i = 0; i < inputs.length; i++) {
+            ids[i] = _attest(
+                msg.sender,
+                inputs[i].subject,
+                inputs[i].category,
+                inputs[i].score,
+                inputs[i].commentHash,
+                inputs[i].evidenceHash,
+                true
             );
         }
     }
@@ -281,7 +358,7 @@ contract ReputationRegistry {
             revert InvalidSignature();
         }
         nonces[attester] = nonce + 1;
-        return _attest(attester, subject, category, score, commentHash);
+        return _attest(attester, subject, category, score, commentHash, bytes32(0), false);
     }
 
     /// @notice Submit many signed attestations in one transaction — the
@@ -303,7 +380,9 @@ contract ReputationRegistry {
                 inp.subject,
                 inp.category,
                 inp.score,
-                inp.commentHash
+                inp.commentHash,
+                bytes32(0),
+                false
             );
         }
     }
@@ -363,7 +442,9 @@ contract ReputationRegistry {
         address subject,
         Category category,
         uint8 score,
-        bytes32 commentHash
+        bytes32 commentHash,
+        bytes32 evidenceHash,
+        bool replaceEvidence
     ) internal returns (uint256 id) {
         if (subject == address(0)) revert ZeroAddress();
         if (subject == attester) revert SelfAttestation();
@@ -382,6 +463,10 @@ contract ReputationRegistry {
             a.score = score;
             a.weight = weight;
             a.commentHash = commentHash;
+            // Plain re-attests (attest / attestBatch / signed paths) pass
+            // replaceEvidence == false and must not wipe evidence that
+            // was attached earlier; attestWithEvidence replaces it.
+            if (replaceEvidence) a.evidenceHash = evidenceHash;
             a.updatedAt = uint64(block.timestamp);
             emit AttestationUpdated(id, attester, subject, category, score, weight);
             _recordSnapshot(subject, category);
@@ -397,6 +482,7 @@ contract ReputationRegistry {
                 score: score,
                 weight: weight,
                 commentHash: commentHash,
+                evidenceHash: evidenceHash,
                 createdAt: uint64(block.timestamp),
                 updatedAt: uint64(block.timestamp),
                 revoked: false,
