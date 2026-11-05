@@ -92,6 +92,19 @@ contract ReputationRegistry {
         Tier tier;
     }
 
+    /// @notice One point in a subject's score history: the score as it
+    ///         stood right after a state change (attest, update, revoke,
+    ///         dispute raise/resolve/expire). A frontend can chart a
+    ///         freelancer's reputation over time without indexing events.
+    ///         `average`/`count`/`effectiveWeight` are the same fields as
+    ///         `Score`, frozen at `timestamp`.
+    struct ScoreSnapshot {
+        uint64 timestamp;
+        uint256 average; // scaled by 100, 0 when count == 0
+        uint256 count; // active attestations included
+        uint256 effectiveWeight; // decay-adjusted weight, in basis points
+    }
+
     error ZeroAddress();
     error SelfAttestation();
     error InvalidScore();
@@ -199,6 +212,11 @@ contract ReputationRegistry {
     // subjects stay listed but rank with count 0 and are excluded.
     address[] private _subjects;
     mapping(address => bool) private _isSubject;
+    // subject => category => snapshots, in chronological order. Every
+    // state change appends an Overall snapshot plus, when the changed
+    // attestation belongs to a specific category, one for that category.
+    mapping(address => mapping(Category => ScoreSnapshot[]))
+        private _scoreHistory;
 
     /// @notice Attest a freelancer's work, or update your existing attestation
     ///         for the same subject + category.
@@ -366,6 +384,7 @@ contract ReputationRegistry {
             a.commentHash = commentHash;
             a.updatedAt = uint64(block.timestamp);
             emit AttestationUpdated(id, attester, subject, category, score, weight);
+            _recordSnapshot(subject, category);
             return id;
         }
 
@@ -394,6 +413,35 @@ contract ReputationRegistry {
         }
         _activeByKey[key] = id + 1;
         emit AttestationCreated(id, attester, subject, category, score, weight);
+        _recordSnapshot(subject, category);
+    }
+
+    /// @notice Append a snapshot of the subject's current scores to
+    ///         history: always the Overall score, plus the changed
+    ///         category's score when the change touched one category.
+    ///         An attestation in `Category.Overall` records one snapshot
+    ///         only — the overall score already covers it.
+    function _recordSnapshot(address subject, Category category) internal {
+        uint256[] storage ids = _subjectAttestations[subject];
+        Score memory overall = _score(ids, Category.Overall, false);
+        _scoreHistory[subject][Category.Overall].push(
+            ScoreSnapshot({
+                timestamp: uint64(block.timestamp),
+                average: overall.average,
+                count: overall.count,
+                effectiveWeight: overall.effectiveWeight
+            })
+        );
+        if (category == Category.Overall) return;
+        Score memory scoped = _score(ids, category, true);
+        _scoreHistory[subject][category].push(
+            ScoreSnapshot({
+                timestamp: uint64(block.timestamp),
+                average: scoped.average,
+                count: scoped.count,
+                effectiveWeight: scoped.effectiveWeight
+            })
+        );
     }
 
     /// @notice Revoke your own attestation. The record stays readable but no
