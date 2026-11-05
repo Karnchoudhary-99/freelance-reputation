@@ -73,4 +73,70 @@ contract VerifiedAttestersTest is Test {
         registry.attest(alice, ReputationRegistry.Category.Overall, 90, bytes32("c1"));
         assertEq(registry.attestation(0).weight, 1);
     }
+
+    function testOnlyOwnerCanManageVerification() public {
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.NotOwner.selector);
+        registry.setVerifiedAttester(carol, true);
+        assertFalse(registry.isVerifiedAttester(carol));
+
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.NotOwner.selector);
+        registry.setVerifiedAttester(carol, false);
+    }
+
+    function testSetVerifiedAttesterRejectsZeroAddress() public {
+        vm.expectRevert(ReputationRegistry.ZeroAddress.selector);
+        registry.setVerifiedAttester(address(0), true);
+    }
+
+    function testAttesterVerifiedEvent() public {
+        vm.expectEmit(true, false, false, true, address(registry));
+        emit ReputationRegistry.AttesterVerified(bob, true);
+        registry.setVerifiedAttester(bob, true);
+
+        vm.expectEmit(true, false, false, true, address(registry));
+        emit ReputationRegistry.AttesterVerified(bob, false);
+        registry.setVerifiedAttester(bob, false);
+    }
+
+    function testVerificationChangeDoesNotRewriteExistingRecords() public {
+        // Bob attests unverified at weight 1.
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 90, bytes32("c1"));
+        assertEq(registry.attestation(0).weight, 1);
+
+        // Verifying him afterwards leaves the record untouched...
+        registry.setVerifiedAttester(bob, true);
+        assertEq(registry.attestation(0).weight, 1);
+        assertEq(registry.getScore(alice).totalWeight, 1);
+
+        // ...but his NEXT attestation (new subject) carries the boost.
+        vm.prank(bob);
+        registry.attest(carol, ReputationRegistry.Category.Overall, 80, bytes32("c1"));
+        assertEq(registry.attestation(1).weight, 2);
+
+        // Un-verifying drops the boost for later attestations only.
+        registry.setVerifiedAttester(bob, false);
+        vm.prank(bob);
+        registry.attest(dave, ReputationRegistry.Category.Overall, 70, bytes32("c1"));
+        assertEq(registry.attestation(2).weight, 1);
+        // Earlier records are still exactly as written.
+        assertEq(registry.attestation(0).weight, 1);
+        assertEq(registry.attestation(1).weight, 2);
+    }
+
+    function testReAttestAfterVerificationPicksUpBoost() public {
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 60, bytes32("c1"));
+        assertEq(registry.attestation(0).weight, 1);
+
+        registry.setVerifiedAttester(bob, true);
+        vm.prank(bob);
+        registry.attest(alice, ReputationRegistry.Category.Overall, 80, bytes32("c1"));
+        // Same record id (update in place), weight re-snapshotted.
+        ReputationRegistry.Attestation memory a = registry.attestation(0);
+        assertEq(a.score, 80);
+        assertEq(a.weight, 2);
+    }
 }
