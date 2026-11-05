@@ -148,4 +148,97 @@ contract DiscoveryTest is Test {
             assertEq(uint256(byCategory[i].tier), uint256(overall[i].tier));
         }
     }
+
+    function testTierDirectoryFilteringOrderAndLimit() public {
+        address dave = makeAddr("dave");
+        address erin = makeAddr("erin");
+        address frank = makeAddr("frank");
+        _attest(makeAddr("a1"), alice, ReputationRegistry.Category.Overall, 90);
+        for (uint256 i = 0; i < 3; i++) {
+            _attest(
+                makeAddr(string(abi.encodePacked("b", i))),
+                bob,
+                ReputationRegistry.Category.Overall,
+                80
+            );
+        }
+        for (uint256 i = 0; i < 5; i++) {
+            _attest(
+                makeAddr(string(abi.encodePacked("c", i))),
+                carol,
+                ReputationRegistry.Category.Overall,
+                80
+            );
+        }
+        for (uint256 i = 0; i < 10; i++) {
+            _attest(
+                makeAddr(string(abi.encodePacked("d", i))),
+                dave,
+                ReputationRegistry.Category.Overall,
+                95
+            );
+        }
+        _attest(makeAddr("a2"), erin, ReputationRegistry.Category.Overall, 100);
+        // Capture the id before pranking: attestationCount() itself
+        // would consume the prank if called inside the revoke line.
+        uint256 erinId = registry.attestationCount() - 1;
+        vm.prank(makeAddr("a2"));
+        registry.revokeAttestation(erinId);
+        _attest(makeAddr("a3"), frank, ReputationRegistry.Category.Overall, 50);
+
+        assertEq(uint256(registry.tierOf(alice)), uint256(ReputationRegistry.Tier.Emerging));
+        assertEq(uint256(registry.tierOf(bob)), uint256(ReputationRegistry.Tier.Established));
+        assertEq(uint256(registry.tierOf(carol)), uint256(ReputationRegistry.Tier.Trusted));
+        assertEq(uint256(registry.tierOf(dave)), uint256(ReputationRegistry.Tier.Elite));
+        assertEq(uint256(registry.tierOf(erin)), uint256(ReputationRegistry.Tier.Unranked));
+
+        address[] memory emerging = registry.getSubjectsByTier(
+            ReputationRegistry.Tier.Emerging,
+            10
+        );
+        // First-seen order, not score order: alice (90) before frank (50).
+        assertEq(emerging.length, 2);
+        assertEq(emerging[0], alice);
+        assertEq(emerging[1], frank);
+        // Limit clamps to the matching set, keeping first-seen order.
+        assertEq(
+            registry.getSubjectsByTier(
+                ReputationRegistry.Tier.Emerging,
+                1
+            )[0],
+            alice
+        );
+        assertEq(
+            registry.getSubjectsByTier(
+                ReputationRegistry.Tier.Emerging,
+                0
+            ).length,
+            0
+        );
+        assertEq(
+            registry.getSubjectsByTier(
+                ReputationRegistry.Tier.Established,
+                10
+            )[0],
+            bob
+        );
+        assertEq(
+            registry.getSubjectsByTier(
+                ReputationRegistry.Tier.Trusted,
+                10
+            )[0],
+            carol
+        );
+        assertEq(
+            registry.getSubjectsByTier(ReputationRegistry.Tier.Elite, 10)[0],
+            dave
+        );
+        // Revoked-only subjects still hold the Unranked tier.
+        address[] memory unranked = registry.getSubjectsByTier(
+            ReputationRegistry.Tier.Unranked,
+            10
+        );
+        assertEq(unranked.length, 1);
+        assertEq(unranked[0], erin);
+    }
 }
