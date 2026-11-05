@@ -241,4 +241,48 @@ contract DiscoveryTest is Test {
         assertEq(unranked.length, 1);
         assertEq(unranked[0], erin);
     }
+
+    function testTierDirectoryReflectsDecay() public {
+        // Three fresh 100s make grace Established (avg 10000, count 3;
+        // Trusted needs count 5). After 400 days those scores decay to
+        // quarter weight, and one fresh 0 drags the decayed average to
+        // 4285 -> Emerging, while the undecayed average (75) would
+        // still be Established.
+        address grace = makeAddr("grace");
+        for (uint256 i = 0; i < 3; i++) {
+            _attest(
+                makeAddr(string(abi.encodePacked("g", i))),
+                grace,
+                ReputationRegistry.Category.Overall,
+                100
+            );
+        }
+        assertEq(
+            uint256(registry.tierOf(grace)),
+            uint256(ReputationRegistry.Tier.Established)
+        );
+        vm.warp(block.timestamp + 400 days);
+        _attest(
+            makeAddr("late-attester"),
+            grace,
+            ReputationRegistry.Category.Overall,
+            0
+        );
+        assertEq(registry.getScore(grace).average, 4285);
+        assertEq(
+            uint256(registry.tierOf(grace)),
+            uint256(ReputationRegistry.Tier.Emerging)
+        );
+        address[] memory established = registry.getSubjectsByTier(
+            ReputationRegistry.Tier.Established,
+            10
+        );
+        assertEq(established.length, 0);
+        address[] memory emerging = registry.getSubjectsByTier(
+            ReputationRegistry.Tier.Emerging,
+            10
+        );
+        assertEq(emerging.length, 1);
+        assertEq(emerging[0], grace);
+    }
 }
