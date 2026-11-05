@@ -1,8 +1,8 @@
 # Gas report — ReputationRegistry
 
 Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
-200 runs), from the unit suites in `test/ReputationRegistry.t.sol`
-and `test/ScoreHistory.t.sol`.
+200 runs), from the unit suites in `test/ReputationRegistry.t.sol`,
+`test/ScoreHistory.t.sol`, and `test/ScorePreview.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -11,27 +11,39 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 3,158,579 gas |
-| Runtime size | 14,614 bytes |
+| Deployment cost | 3,306,783 gas |
+| Runtime size | 15,299 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
 `_recordSnapshot` helper plus its two view functions.
 
+Score preview added ~148k gas to deployment (+685 bytes): the
+`_scoreAt` time parameterization (one extra `createdAt` comparison
+per record) plus five view functions (`getScoreAt`,
+`getScoreByCategoryAt`, `getProfileAt`, `tierOfAt`,
+`decayFactorBpsAt`). Writes are unaffected — previews are pure
+reads over the existing records.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
 | --- | --- | --- | --- | --- | --- |
-| `attest` | 22,333 | 339,955 | 378,421 | 512,354 | 60 |
+| `attest` | 22,311 | 348,209 | 378,936 | 513,236 | 74 |
 | `disputeAttestation` | 26,133 | 98,801 | 99,820 | 187,884 | 15 |
 | `revokeAttestation` | 23,677 | 68,181 | 79,300 | 148,392 | 8 |
 | `resolveDispute` | 26,200 | 93,947 | 99,107 | 145,465 | 8 |
 | `expireDispute` | 26,092 | 65,588 | 30,465 | 139,136 | 6 |
-| `getScore` (view) | 3,078 | 17,783 | 21,695 | 26,540 | 25 |
+| `getScore` (view) | 3,292 | 18,439 | 22,300 | 27,145 | 26 |
 | `getScoreByCategory` (view) | 19,625 | 20,979 | 20,983 | 22,327 | 4 |
 | `getScoreHistory` (view) | 3,188 | 20,736 | 22,112 | 50,005 | 14 |
 | `attesterWeight` (view) | 2,979 | 15,671 | 14,967 | 21,877 | 7 |
-| `decayFactorBps` (view) | 421 | 544 | 574 | 575 | 6 |
+| `decayFactorBps` (view) | 578 | 705 | 753 | 767 | 7 |
+| `decayFactorBpsAt` (view) | 702 | 821 | 871 | 891 | 6 |
+| `getScoreAt` (view) | 10,077 | 15,529 | 13,995 | 22,618 | 13 |
+| `getScoreByCategoryAt` (view) | 21,720 | 21,720 | 21,720 | 21,720 | 2 |
+| `getProfileAt` (view) | 39,313 | 39,313 | 39,313 | 39,313 | 1 |
+| `tierOfAt` (view) | 27,852 | 30,036 | 31,072 | 31,185 | 3 |
 | `getLeaderboard` (view) | 3,134 | 38,865 | 40,049 | 60,143 | 13 |
 | `getLeaderboardByCategory` (view) | 37,573 | 71,266 | 70,875 | 128,670 | 6 |
 
@@ -82,7 +94,14 @@ the page size, not with the subject's total history.
   suite, where the tier test registers 6 subjects with up to 10
   attestations each. Same conclusion: views for off-chain reads,
   not transaction inputs.
-- **Invariant fuzz baseline:** `test/Invariant.t.sol` runs 6 invariants
+- **Score previews cost about the same as the live reads:** the
+  preview views run the same scan with decay measured against the
+  target time, so `getScoreAt` tracks `getScore` (~15.5k gas avg on
+  the small subjects in the test suite) and `getProfileAt` /
+  `tierOfAt` cost one extra scan per scope (~30–39k gas). The only
+  added per-record work is the `createdAt <= when` check, which is
+  why write costs did not move.
+- **Invariant fuzz baseline:** `test/Invariant.t.sol` runs 7 invariants
   × 256 runs × depth 100 (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
   baseline; re-run `forge snapshot` after contract changes and diff it.
