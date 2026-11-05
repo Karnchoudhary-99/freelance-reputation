@@ -583,12 +583,19 @@ contract ReputationRegistry {
     /// @notice Dispute an attestation about you. Only the subject may
     ///         dispute, only while the attestation is active, and only once
     ///         at a time. While disputed it is excluded from every score.
+    ///         An expired attestation cannot be disputed: it already
+    ///         counts toward no score, so there is nothing to dispute —
+    ///         if the attester re-attests and revives it, the fresh
+    ///         record can be disputed like any other.
     function disputeAttestation(uint256 id, bytes32 reasonHash) external {
         if (id >= _attestations.length) revert UnknownAttestation();
         Attestation storage a = _attestations[id];
         if (a.subject != msg.sender) revert NotSubject();
         if (a.revoked) revert AlreadyRevoked();
         if (a.disputed) revert AlreadyDisputed();
+        if (_isExpiredAt(a, uint64(block.timestamp))) {
+            revert AttestationExpired();
+        }
         a.disputed = true;
         a.disputeReason = reasonHash;
         a.disputedAt = uint64(block.timestamp);
