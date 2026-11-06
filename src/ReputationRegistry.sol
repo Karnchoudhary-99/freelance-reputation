@@ -1559,6 +1559,9 @@ contract ReputationRegistry {
         address[] memory matched = new address[](_subjects.length);
         uint256 matchedCount;
         for (uint256 i = 0; i < _subjects.length; i++) {
+            // The tier directory is public discovery too: opted-out
+            // subjects are not listed in any tier.
+            if (_leaderboardOptOut[_subjects[i]]) continue;
             Score memory s = _score(
                 _subjectAttestations[_subjects[i]],
                 Category.Overall,
