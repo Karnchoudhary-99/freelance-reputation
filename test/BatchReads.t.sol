@@ -92,4 +92,53 @@ contract BatchReadsTest is Test {
         assertEq(uint256(tiers[2]), uint256(ReputationRegistry.Tier.Unranked));
         assertEq(uint256(tiers[3]), uint256(ReputationRegistry.Tier.Unranked));
     }
+
+    function testBatchReadsMatchSingleSubjectViews() public {
+        _attest(makeAddr("a1"), alice, ReputationRegistry.Category.Quality, 80);
+        _attest(makeAddr("a2"), alice, ReputationRegistry.Category.Communication, 100);
+        _attest(makeAddr("a3"), bob, ReputationRegistry.Category.Timeliness, 60);
+        _attest(makeAddr("a4"), carol, ReputationRegistry.Category.Overall, 95);
+
+        address[] memory subjects = _subjects();
+        ReputationRegistry.Score[] memory scores = registry.getScores(subjects);
+        ReputationRegistry.Profile[] memory profiles = registry.getProfiles(subjects);
+        ReputationRegistry.Tier[] memory tiers = registry.getTiers(subjects);
+        for (uint256 i = 0; i < subjects.length; i++) {
+            ReputationRegistry.Score memory single = registry.getScore(subjects[i]);
+            assertEq(scores[i].average, single.average);
+            assertEq(scores[i].count, single.count);
+            assertEq(scores[i].totalWeight, single.totalWeight);
+            assertEq(scores[i].effectiveWeight, single.effectiveWeight);
+            ReputationRegistry.Profile memory profile = registry.getProfile(subjects[i]);
+            assertEq(profiles[i].overall.average, profile.overall.average);
+            assertEq(profiles[i].quality.average, profile.quality.average);
+            assertEq(profiles[i].communication.average, profile.communication.average);
+            assertEq(profiles[i].timeliness.average, profile.timeliness.average);
+            assertEq(profiles[i].reliability.average, profile.reliability.average);
+            assertEq(uint256(tiers[i]), uint256(registry.tierOf(subjects[i])));
+        }
+    }
+
+    function testBatchReadsEmptyInput() public view {
+        address[] memory empty = new address[](0);
+        assertEq(registry.getScores(empty).length, 0);
+        assertEq(registry.getProfiles(empty).length, 0);
+        assertEq(registry.getTiers(empty).length, 0);
+    }
+
+    function testBatchReadsReflectRevocation() public {
+        _attest(makeAddr("a1"), alice, ReputationRegistry.Category.Overall, 90);
+        _attest(makeAddr("a2"), bob, ReputationRegistry.Category.Overall, 70);
+        vm.prank(makeAddr("a1"));
+        registry.revokeAttestation(0);
+
+        address[] memory subjects = new address[](2);
+        subjects[0] = alice;
+        subjects[1] = bob;
+        ReputationRegistry.Score[] memory scores = registry.getScores(subjects);
+        assertEq(scores[0].count, 0);
+        assertEq(scores[0].average, 0);
+        assertEq(scores[1].average, 7000);
+        assertEq(uint256(registry.getTiers(subjects)[0]), uint256(ReputationRegistry.Tier.Unranked));
+    }
 }
