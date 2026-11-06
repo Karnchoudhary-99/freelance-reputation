@@ -160,6 +160,18 @@ contract ReputationRegistry {
         Tier tier;
     }
 
+    /// @notice One row of the top-attesters board: how many active
+    ///         attestations an attester gave, their own overall average
+    ///         (so the board shows whether the most prolific endorsers
+    ///         are themselves well-rated), and the weight their next
+    ///         attestation would carry right now.
+    struct AttesterLeaderboardEntry {
+        address attester;
+        uint256 count; // active attestations they gave
+        uint256 average; // their own overall average, scaled by 100
+        uint8 weight; // attesterWeight(attester) right now
+    }
+
     /// @notice One point in a subject's score history: the score as it
     ///         stood right after a state change (attest, update, revoke,
     ///         dispute raise/resolve/expire). A frontend can chart a
@@ -411,6 +423,12 @@ contract ReputationRegistry {
     // attester => attestation ids they created (updates do not add a second
     // entry: the index tracks records, not writes)
     mapping(address => uint256[]) private _attesterAttestations;
+    // Every address that has ever attested, in first-seen order (updates
+    // and re-attestations after revocation do not add a second entry).
+    // Powers the top-attesters board; attesters whose records are all
+    // revoked now stay listed but rank with count 0 and are excluded.
+    address[] private _attesters;
+    mapping(address => bool) private _isAttester;
     // keccak256(attester, subject, category) => id + 1 (0 == none active)
     mapping(bytes32 => uint256) private _activeByKey;
     // Every address that has ever received an attestation, in first-seen
@@ -874,6 +892,10 @@ contract ReputationRegistry {
         );
         _subjectAttestations[subject].push(id);
         _attesterAttestations[attester].push(id);
+        if (!_isAttester[attester]) {
+            _isAttester[attester] = true;
+            _attesters.push(attester);
+        }
         if (!_isSubject[subject]) {
             _isSubject[subject] = true;
             _subjects.push(subject);
@@ -1329,6 +1351,13 @@ contract ReputationRegistry {
         return out;
     }
 
+    /// @notice How many distinct attesters have ever created an
+    ///         attestation (including attesters whose records are all
+    ///         revoked now).
+    function attesterCount() external view returns (uint256) {
+        return _attesters.length;
+    }
+
     /// @notice How many records an attester has created (updates excluded).
     function attesterAttestationCount(
         address attester
@@ -1387,6 +1416,83 @@ contract ReputationRegistry {
         }
         stats.strikes = _strikes[attester];
         stats.suspended = stats.strikes >= MAX_STRIKES;
+    }
+
+    /// @notice Top attesters by active attestations given, highest first;
+    ///         ties break toward the attester with the higher own overall
+    ///         average, then toward the attester seen first (insertion
+    ///         sort is stable, so the ranking is deterministic). "Active"
+    ///         means the record still counts toward a score — not revoked,
+    ///         not disputed, not expired — the same rule the score views
+    ///         use. Attesters with no active attestations are excluded.
+    ///         A suspended attester stays ranked on the strength of their
+    ///         past records (suspension blocks new attestations only),
+    ///         and `weight` is their current `attesterWeight`, so a
+    ///         suspended attester shows weight 0. `limit` clamps to the
+    ///         ranked set and 0 returns an empty array. Like the subject
+    ///         boards, this is a view over the whole attester set for
+    ///         off-chain `eth_call`, not a transaction input.
+    function getTopAttesters(
+        uint256 limit
+    ) external view returns (AttesterLeaderboardEntry[] memory) {
+        AttesterLeaderboardEntry[] memory ranked = new AttesterLeaderboardEntry[](
+            _attesters.length
+        );
+        uint256 rankedCount;
+        for (uint256 i = 0; i < _attesters.length; i++) {
+            address attester = _attesters[i];
+            uint256 active = _activeAttestationCount(attester);
+            if (active == 0) continue;
+            Score memory own = _score(
+                _subjectAttestations[attester],
+                Category.Overall,
+                false
+            );
+            ranked[rankedCount++] = AttesterLeaderboardEntry({
+                attester: attester,
+                count: active,
+                average: own.average,
+                weight: attesterWeight(attester)
+            });
+        }
+        // Insertion sort, descending by count, then by own average.
+        for (uint256 i = 1; i < rankedCount; i++) {
+            AttesterLeaderboardEntry memory entry = ranked[i];
+            uint256 j = i;
+            while (
+                j > 0 &&
+                (ranked[j - 1].count < entry.count ||
+                    (ranked[j - 1].count == entry.count &&
+                        ranked[j - 1].average < entry.average))
+            ) {
+                ranked[j] = ranked[j - 1];
+                j--;
+            }
+            ranked[j] = entry;
+        }
+        uint256 outCount = limit < rankedCount ? limit : rankedCount;
+        AttesterLeaderboardEntry[] memory out = new AttesterLeaderboardEntry[](outCount);
+        for (uint256 i = 0; i < outCount; i++) {
+            out[i] = ranked[i];
+        }
+        return out;
+    }
+
+    /// @notice How many of an attester's records still count toward
+    ///         scores: not revoked, not disputed, not expired. The
+    ///         ranking rule for `getTopAttesters`, shared so the board
+    ///         and any future caller agree on what "active" means.
+    function _activeAttestationCount(
+        address attester
+    ) internal view returns (uint256 active) {
+        uint256[] storage ids = _attesterAttestations[attester];
+        for (uint256 i = 0; i < ids.length; i++) {
+            Attestation storage a = _attestations[ids[i]];
+            if (a.revoked) continue;
+            if (a.disputed) continue;
+            if (_isExpiredAt(a, uint64(block.timestamp))) continue;
+            active++;
+        }
     }
 
     /// @notice Human-readable reputation tiers, from the overall score

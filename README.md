@@ -193,6 +193,24 @@ relayer (a platform backend, a friend) submits it:
   attester's track record. A client deciding whether to trust an
   endorsement can weigh the attester, not just the score.
 
+### Top attesters
+
+- `getTopAttesters(limit)` — the most prolific endorsers, ranked by
+  active attestations given, highest first: `{attester, count,
+  average, weight}`. Ties break toward the attester with the higher
+  own overall average, then toward the attester seen first, so the
+  ranking is deterministic. "Active" means the record still counts
+  toward a score — not revoked, not disputed, not expired — the same
+  rule the score views use. `average` is the attester's own overall
+  average (so the board shows whether the most prolific endorsers
+  are themselves well-rated) and `weight` is their current
+  `attesterWeight`. A suspended attester stays ranked on past records
+  (suspension blocks new attestations only) and shows weight 0.
+  `attesterCount()` reports how many distinct attesters have ever
+  attested. Like the subject boards, this is a view for off-chain
+  `eth_call`: it scans the whole attester set, so keep `limit` small
+  on a busy registry.
+
 ### Verified attesters
 
 The deployer is the registry `owner` and may mark attesters verified with
