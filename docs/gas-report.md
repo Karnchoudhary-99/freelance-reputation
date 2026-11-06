@@ -7,8 +7,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/AttestationExpiry.t.sol`, `test/CategoryReads.t.sol`, and
 `test/AttesterStrikes.t.sol`, `test/ScoreProofs.t.sol`,
 `test/Governance.t.sol`, `test/Delegation.t.sol`,
-`test/DisputeEscalation.t.sol`, `test/BatchReads.t.sol`, and
-`test/LeaderboardOptOut.t.sol`.
+`test/DisputeEscalation.t.sol`, `test/BatchReads.t.sol`,
+`test/LeaderboardOptOut.t.sol`, and `test/TopAttesters.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -17,8 +17,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 5,972,774 gas |
-| Runtime size | 27,247 bytes |
+| Deployment cost | 6,276,709 gas |
+| Runtime size | 28,652 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -159,6 +159,18 @@ a test). The listing check itself is one cold/warm SLOAD per subject
 inside the leaderboard and tier-directory scans, so board reads
 grow by a negligible amount; scores, tiers, and attestations are
 untouched because opt-out never enters the scoring path.
+
+Top attesters added ~304k gas to deployment (+1,405 bytes): the
+`_attesters` first-seen registry, the `AttesterLeaderboardEntry`
+struct, `getTopAttesters`, and the `_activeAttestationCount`
+helper. Every `attest` now pays one extra first-seen check for the
+attester (a warm SLOAD plus, on a brand-new attester, one array
+push) — the average barely moves in the test suite because most
+calls re-attest known attesters. `getTopAttesters` averages ~56k
+gas on the small boards in the test suite (up to 4 attesters); it
+scores every attester's own record set twice over (once for the
+active count, once for the own average), so like the subject boards
+it is a view for off-chain `eth_call`, not a transaction input.
 
 ## Function costs (gas)
 
