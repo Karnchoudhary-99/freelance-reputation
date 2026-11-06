@@ -268,6 +268,7 @@ contract ReputationRegistry {
         bool upheld
     );
     event AttesterVerified(address indexed attester, bool verified);
+    event LeaderboardOptOut(address indexed subject, bool optedOut);
     event AttesterStruck(address indexed attester, uint256 strikes);
     event StrikesCleared(address indexed attester);
     event ExpiryDurationUpdated(uint64 expiryDuration);
@@ -418,6 +419,14 @@ contract ReputationRegistry {
     // subjects stay listed but rank with count 0 and are excluded.
     address[] private _subjects;
     mapping(address => bool) private _isSubject;
+    // subject => whether they opted out of public discovery
+    // (leaderboards and the tier directory). Opting out hides the
+    // subject from public listings only: their scores, tier, and
+    // attestations stay readable directly, and they keep receiving
+    // attestations. A subject that never received an attestation
+    // cannot opt out of a listing they are not on — the setter
+    // simply records the choice for when they are listed.
+    mapping(address => bool) private _leaderboardOptOut;
     // subject => category => snapshots, in chronological order. Every
     // state change appends an Overall snapshot plus, when the changed
     // attestation belongs to a specific category, one for that category.
@@ -1601,6 +1610,27 @@ contract ReputationRegistry {
     ) external view returns (LeaderboardEntry[] memory) {
         bool filterCategory = category != Category.Overall;
         return _rankedLeaderboard(category, filterCategory, limit);
+    }
+
+    /// @notice Opt yourself out of — or back into — public discovery:
+    ///         the leaderboards and the tier directory. Only the subject
+    ///         themself may call this (the caller IS the subject), so no
+    ///         one can hide or expose someone else. Opting out never
+    ///         touches scores, tiers, attestations, or proofs: a hidden
+    ///         freelancer's reputation is still readable directly, just
+    ///         not listed publicly. A subject may opt out before ever
+    ///         receiving an attestation; the choice applies as soon as
+    ///         they are listed.
+    function setLeaderboardOptOut(bool optOut) external {
+        _leaderboardOptOut[msg.sender] = optOut;
+        emit LeaderboardOptOut(msg.sender, optOut);
+    }
+
+    /// @notice Whether a subject opted out of public discovery.
+    function isLeaderboardOptedOut(
+        address subject
+    ) external view returns (bool) {
+        return _leaderboardOptOut[subject];
     }
 
     /// @notice Shared ranking behind `getLeaderboard` and
