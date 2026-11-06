@@ -5,9 +5,10 @@ import {Test} from "forge-std/Test.sol";
 import {ReputationRegistry} from "../src/ReputationRegistry.sol";
 
 /// @notice Fuzz handler driving the registry through attest / revoke /
-///         dispute / resolve / expire cycles plus time warps, with
-///         owner strikes and strike-clearing mixed in, and pauses /
-///         unpauses so the fuzz runs exercise the frozen state too.
+///         dispute / resolve / expire / escalate / owner-arbitrate
+///         cycles plus time warps, with owner strikes and
+///         strike-clearing mixed in, and pauses / unpauses so the
+///         fuzz runs exercise the frozen state too.
 ///         Attestations are sometimes routed through an active
 ///         delegate (set / revoked by the handler), so the delegate
 ///         paths get the same lifecycle coverage as direct attests.
@@ -37,6 +38,7 @@ contract ReputationHandler is Test {
     // id => mirror of the record's lifecycle flags
     mapping(uint256 => bool) public revoked;
     mapping(uint256 => bool) public disputed;
+    mapping(uint256 => bool) public escalated;
     mapping(uint256 => uint64) public disputedAt;
     mapping(uint256 => address) public recordAttester;
     mapping(uint256 => address) public recordSubject;
@@ -133,6 +135,7 @@ contract ReputationHandler is Test {
         _touch(recordSubject[id], recordCategory[id]);
         revoked[id] = true;
         disputed[id] = false;
+        escalated[id] = false;
         disputedAt[id] = 0;
         activeByKey[
             _key(recordAttester[id], recordSubject[id], recordCategory[id])
@@ -159,6 +162,7 @@ contract ReputationHandler is Test {
         registry.resolveDispute(id, uphold);
         _touch(recordSubject[id], recordCategory[id]);
         disputed[id] = false;
+        escalated[id] = false;
         disputedAt[id] = 0;
         if (!uphold) {
             revoked[id] = true;
@@ -179,7 +183,46 @@ contract ReputationHandler is Test {
         registry.expireDispute(id);
         _touch(recordSubject[id], recordCategory[id]);
         disputed[id] = false;
+        escalated[id] = false;
         disputedAt[id] = 0;
+    }
+
+    /// @notice Escalate a dispute the attester ignored for at least
+    ///         ESCALATION_DELAY. No-op until the delay has passed, and
+    ///         never on a settled or already-escalated record. The
+    ///         escalation changes no score, so no snapshot is touched.
+    function escalate(uint256 seed) external {
+        if (created == 0) return;
+        uint256 id = seed % created;
+        if (revoked[id] || !disputed[id] || escalated[id]) return;
+        if (
+            block.timestamp <
+            uint256(disputedAt[id]) + registry.ESCALATION_DELAY()
+        ) return;
+        vm.prank(recordSubject[id]);
+        registry.escalateDispute(id);
+        escalated[id] = true;
+    }
+
+    /// @notice Arbitrate an escalated dispute as the registry owner
+    ///         (the handler deployed the registry). Mirrors the
+    ///         attester's resolveDispute, including the concede-revokes
+    ///         branch, and clears the escalation flag either way.
+    function resolveDisputeAsOwner(uint256 seed, bool uphold) external {
+        if (created == 0) return;
+        uint256 id = seed % created;
+        if (revoked[id] || !disputed[id] || !escalated[id]) return;
+        registry.resolveDisputeAsOwner(id, uphold);
+        _touch(recordSubject[id], recordCategory[id]);
+        disputed[id] = false;
+        escalated[id] = false;
+        disputedAt[id] = 0;
+        if (!uphold) {
+            revoked[id] = true;
+            activeByKey[
+                _key(recordAttester[id], recordSubject[id], recordCategory[id])
+            ] = 0;
+        }
     }
 
     function _touch(
@@ -495,6 +538,26 @@ contract ReputationInvariants is Test {
                     registry.isDelegate(actors[i], actors[j]),
                     expiry > block.timestamp
                 );
+            }
+        }
+    }
+
+    /// @notice The handler's escalation mirror matches the registry
+    ///         exactly, and an escalated record is always still
+    ///         disputed — escalation never settles a dispute, it only
+    ///         opens the owner-arbitration path, and every exit
+    ///         (attester resolve, owner resolve, expiry, revoke)
+    ///         clears the flag on both sides.
+    function invariant_escalation_mirror_matches() public view {
+        uint256 created = handler.created();
+        for (uint256 id = 0; id < created; id++) {
+            ReputationRegistry.Attestation memory a = registry.attestation(
+                id
+            );
+            assertEq(a.escalated, handler.escalated(id));
+            assertEq(registry.isDisputeEscalated(id), handler.escalated(id));
+            if (a.escalated) {
+                assertTrue(a.disputed);
             }
         }
     }
