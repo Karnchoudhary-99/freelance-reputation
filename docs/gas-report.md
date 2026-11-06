@@ -6,7 +6,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/Evidence.t.sol`, `test/VerifiedAttesters.t.sol`,
 `test/AttestationExpiry.t.sol`, `test/CategoryReads.t.sol`, and
 `test/AttesterStrikes.t.sol`, `test/ScoreProofs.t.sol`,
-`test/Governance.t.sol`, `test/Delegation.t.sol`.
+`test/Governance.t.sol`, `test/Delegation.t.sol`, and
+`test/DisputeEscalation.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -15,8 +16,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 5,372,020 gas |
-| Runtime size | 24,793 bytes |
+| Deployment cost | 5,625,713 gas |
+| Runtime size | 25,966 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -124,6 +125,20 @@ the per-call cost of the check itself is a cold/warm SLOAD, not a
 write. Suspended attestations revert before any state change, so a
 blocked call costs only the 21k-gas base plus the checks.
 
+Dispute escalation added ~254k gas to deployment (+1,173 bytes):
+one extra `bool` slot on the `Attestation` struct (packed with the
+existing flags, but the struct grows a slot on first write), the
+`escalateDispute` / `resolveDisputeAsOwner` entry points, the
+`isDisputeEscalated` view, and two events. `escalateDispute` is a
+single-slot flag flip (~35k gas avg, ~38k on the first escalation
+in a test); `resolveDisputeAsOwner` mirrors the attester's
+`resolveDispute` (~87k gas avg — the uphold path records a snapshot
+and refreshes the decay clock, the concede path revokes and clears
+the active key, so the two paths bracket the average). Escalation
+itself records no snapshot and touches no score, which is why it
+stays cheap; the owner-arbitration cost is paid only when a dispute
+actually reaches arbitration.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -155,6 +170,9 @@ blocked call costs only the 21k-gas base plus the checks.
 | `revokeAttestation` | 23,678 | 89,316 | 80,473 | 272,153 | 15 |
 | `resolveDispute` | 26,275 | 127,249 | 140,289 | 238,172 | 12 |
 | `expireDispute` | 26,070 | 66,570 | 30,443 | 142,124 | 6 |
+| `escalateDispute` | 23,700 | 35,265 | 37,722 | 37,722 | 25 |
+| `resolveDisputeAsOwner` | 23,910 | 87,403 | 85,530 | 149,668 | 12 |
+| `isDisputeEscalated` (view) | 2,457 | 4,347 | 4,820 | 4,820 | 5 |
 | `getScore` (view) | 3,307 | 18,616 | 16,507 | 30,384 | 48 |
 | `getScoreByCategory` (view) | 23,352 | 24,996 | 24,747 | 26,163 | 5 |
 | `getScoreHistory` (view) | 3,161 | 20,744 | 22,123 | 50,073 | 14 |
@@ -231,6 +249,7 @@ the page size, not with the subject's total history.
   allocation); `setEvidence` afterwards is a single-slot update
   (~39k gas). Evidence never triggers a snapshot or score
   recomputation, so it stays off the expensive paths.
-  × 256 runs × depth 100 (25,600 handler calls each, 0 reverts). The
+- **Invariant fuzz baseline:** 11 invariants × 256 runs × depth 100
+  (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
   baseline; re-run `forge snapshot` after contract changes and diff it.

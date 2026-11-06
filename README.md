@@ -25,6 +25,7 @@ that travel with the worker, not the platform.
 - [x] Score proofs (owner-issued portable certificates, on-chain verification, 90-day max validity)
 - [x] Governance & safety (emergency pause, two-step ownership transfer)
 - [x] Attester delegation (expiry-bounded delegates attest on your behalf)
+- [x] Dispute escalation (subject escalates after 7 unanswered days, owner arbitrates)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -111,6 +112,18 @@ A freelancer who believes an attestation is unfair can challenge it:
   This stops an attester from suppressing a score forever by ignoring the
   dispute. Expiry reinstates the attestation as-is — it does not refresh
   the decay clock.
+- `escalateDispute(id)` — only the subject, only once the dispute has sat
+  unanswered for 7 days. Escalation changes no score — the record stays
+  excluded — it only opens the owner-arbitration path, so an unresponsive
+  attester cannot stall a dispute for the full 30 days.
+- `resolveDisputeAsOwner(id, uphold)` — only the registry owner, only on
+  an escalated dispute. Same outcome as the attester resolving it:
+  upholding re-confirms the attestation (decay clock refreshed),
+  conceding revokes it. The attester may still resolve the dispute
+  themselves after escalation — whichever resolution lands first settles
+  it. `isDisputeEscalated(id)` reports whether a dispute is escalated.
+  Escalation and owner arbitration stay open while the registry is
+  paused, like every other dispute exit.
 - While a dispute is open, the attester cannot quietly overwrite the
   record with a fresh `attest` call; revoking it settles the dispute.
 
@@ -460,12 +473,12 @@ alice score = (60*3 + 90*1) / 4 = 67.50
 ### Invariant fuzz tests
 
 `test/Invariant.t.sol` drives the registry through attest / revoke /
-dispute / resolve / expire cycles plus time warps (crossing the 90-day
+dispute / resolve / expire / escalate / owner-arbitrate cycles plus time warps (crossing the 90-day
 and 365-day decay tiers and the 30-day dispute window) and owner strikes
 / strike-clearing, plus pause / unpause cycles and delegate set / revoke
 cycles (about half the attestations are routed through an active
 delegate when the attester has one), with a guarded handler, so every handler call is
-expected to succeed and a revert can never mask a broken invariant. Ten
+expected to succeed and a revert can never mask a broken invariant. Eleven
 invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
@@ -478,14 +491,15 @@ one), the strike mirror matching the registry with `attesterWeight`
 0 exactly while suspended and 1–3 otherwise, the attestation count
 staying frozen while the registry is paused, and the delegation mirror
 matching the registry with `isDelegate` true exactly while the mirrored
-expiry is still in the future. Baseline: 10 invariants × 256 runs × depth 100 — 25,600 handler calls
+expiry is still in the future, and the escalation mirror matching the
+registry with an escalated record always still disputed. Baseline: 11 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 5,372,020 gas, 24,793 bytes runtime).
+per-function gas (deploy 5,625,713 gas, 25,966 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 220 tests (210 unit + 10 invariants)
+forge test          # 245 tests (234 unit + 11 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 
