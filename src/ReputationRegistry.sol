@@ -220,6 +220,7 @@ contract ReputationRegistry {
     error NoPendingTransfer();
     error AttestationExpired();
     error AttesterSuspended();
+    error InvalidDecayPeriods();
     error InvalidProofValidity();
     error NoScoreProof();
     error NotDelegate();
@@ -284,6 +285,7 @@ contract ReputationRegistry {
     event AttesterStruck(address indexed attester, uint256 strikes);
     event StrikesCleared(address indexed attester);
     event ExpiryDurationUpdated(uint64 expiryDuration);
+    event DecayPeriodsUpdated(uint256 fullPeriod, uint256 halfPeriod);
     event ScoreProofIssued(
         address indexed subject,
         uint256 average,
@@ -328,8 +330,25 @@ contract ReputationRegistry {
     uint256 public constant DECAY_FULL_BPS = 10000; // first 90 days
     uint256 public constant DECAY_HALF_BPS = 5000; // rest of year one
     uint256 public constant DECAY_QUARTER_BPS = 2500; // after one year
+    /// @notice The deploy-time decay periods (see `decayFullPeriod` /
+    ///         `decayHalfPeriod`): full weight for the first 90 days,
+    ///         half weight for the rest of year one, quarter weight
+    ///         after. The owner may change both (see
+    ///         `setDecayPeriods`); these constants stay as the
+    ///         documented defaults.
     uint256 public constant DECAY_FULL_PERIOD = 90 days;
     uint256 public constant DECAY_HALF_PERIOD = 365 days;
+
+    /// @notice Current decay periods: an attestation keeps full weight
+    ///         until `decayFullPeriod` after its last update, half
+    ///         weight until `decayHalfPeriod`, quarter weight after.
+    ///         Start at the documented defaults; the owner may retune
+    ///         them for a registry whose work cycles are shorter or
+    ///         longer than a year (see `setDecayPeriods`). Changing them
+    ///         re-weights every existing record from its own last
+    ///         update — no record is ever rewritten.
+    uint256 public decayFullPeriod = DECAY_FULL_PERIOD;
+    uint256 public decayHalfPeriod = DECAY_HALF_PERIOD;
 
     /// @notice How long an attester has to answer a dispute before the
     ///         subject may reinstate the attestation unilaterally.
@@ -1831,15 +1850,19 @@ contract ReputationRegistry {
     ///         at `timestamp`, measured against time `when` instead of the
     ///         current block time — the building block of the score-preview
     ///         views. A `when` before the update counts as full weight:
-    ///         the attestation had not aged yet at that point.
+    ///         the attestation had not aged yet at that point. The
+    ///         periods are the currently configured ones (see
+    ///         `setDecayPeriods`), so this is a view, not a pure function:
+    ///         retuning the schedule changes what it returns for the
+    ///         same inputs.
     function decayFactorBpsAt(
         uint64 timestamp,
         uint64 when
-    ) public pure returns (uint256) {
+    ) public view returns (uint256) {
         if (when <= timestamp) return DECAY_FULL_BPS;
         uint256 age = when - timestamp;
-        if (age < DECAY_FULL_PERIOD) return DECAY_FULL_BPS;
-        if (age < DECAY_HALF_PERIOD) return DECAY_HALF_BPS;
+        if (age < decayFullPeriod) return DECAY_FULL_BPS;
+        if (age < decayHalfPeriod) return DECAY_HALF_BPS;
         return DECAY_QUARTER_BPS;
     }
 
@@ -1916,6 +1939,31 @@ contract ReputationRegistry {
         if (msg.sender != owner) revert NotOwner();
         expiryDuration = duration;
         emit ExpiryDurationUpdated(duration);
+    }
+
+    /// @notice Retune the decay schedule: how long an attestation keeps
+    ///         full weight (`fullPeriod`) and half weight
+    ///         (`halfPeriod`) after its last update. Only the owner may
+    ///         call this. The new schedule applies to every record from
+    ///         its own last update — shortening the full period can drop
+    ///         live scores immediately, and lengthening it can revive
+    ///         decayed weight at once. Existing records are never
+    ///         rewritten. Bounds: the full period must be at least 1
+    ///         day (a shorter window would make fresh attestations decay
+    ///         almost instantly), the half period must be longer than
+    ///         the full period, and at most 10 years (beyond that decay
+    ///         is effectively off — set the periods long instead of
+    ///         pretending decay still applies).
+    function setDecayPeriods(uint256 fullPeriod, uint256 halfPeriod) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (
+            fullPeriod < 1 days ||
+            halfPeriod <= fullPeriod ||
+            halfPeriod > 3650 days
+        ) revert InvalidDecayPeriods();
+        decayFullPeriod = fullPeriod;
+        decayHalfPeriod = halfPeriod;
+        emit DecayPeriodsUpdated(fullPeriod, halfPeriod);
     }
 
     /// @notice Freeze the registry in an emergency: a bug, a spam
