@@ -23,6 +23,7 @@ that travel with the worker, not the platform.
 - [x] Category reads + latest snapshot (paginated per-category attestations, one-call latest snapshot)
 - [x] Attester strikes & suspension (owner-managed strikes, -1 weight each, 3 strikes suspends)
 - [x] Score proofs (owner-issued portable certificates, on-chain verification, 90-day max validity)
+- [x] Governance & safety (emergency pause, two-step ownership transfer)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -382,6 +383,34 @@ registry instead of trusting the freelancer's word.
   withdrawn; the subject keeps their attestations and live score, and a
   new proof may be issued afterwards.
 
+### Governance & safety
+
+Two controls for the day something goes wrong — and for the day the
+registry outgrows its deployer.
+
+- **Emergency pause.** `pause()` / `unpause()` — owner only. While
+  paused, no attestation can be created or updated (direct, batch, or
+  signed — the guard sits in `_attest`, so every path is frozen by one
+  check) and no evidence or score proof can be issued. Deliberately
+  **not** blocked: revoking an attestation, and raising, resolving, or
+  expiring a dispute — a pause must never trap a subject under a bad
+  attestation. The owner's own admin controls (verify, strike, expiry)
+  keep working, so the problem that caused the pause can be fixed
+  while it is in force, and every read (scores, tiers, leaderboards,
+  proofs) keeps working: pausing freezes writes, not the registry.
+  Unpausing resumes exactly where things left off — a pause never
+  rewrites records, scores, or the decay clock. A signed attestation
+  submitted while paused reverts atomically, so the signer's nonce is
+  not consumed.
+- **Two-step ownership transfer.** `transferOwnership(newOwner)` —
+  owner only, zero-address guarded — names a pending owner; nothing
+  changes until `acceptOwnership()`, callable only by the pending
+  address, moves every admin right at once. A typo cannot hand the
+  registry to a dead address, and `cancelOwnershipTransfer()` lets the
+  current owner abort before acceptance. Starting a second transfer
+  overwrites the first. Transfers work while paused, so a compromised
+  owner key can be rotated out from under a freeze.
+
 ### Example flow
 
 ```text
@@ -397,8 +426,8 @@ alice score = (60*3 + 90*1) / 4 = 67.50
 `test/Invariant.t.sol` drives the registry through attest / revoke /
 dispute / resolve / expire cycles plus time warps (crossing the 90-day
 and 365-day decay tiers and the 30-day dispute window) and owner strikes
-/ strike-clearing, with a guarded handler, so every handler call is
-expected to succeed and a revert can never mask a broken invariant. Eight
+/ strike-clearing, plus pause / unpause cycles, with a guarded handler, so every handler call is
+expected to succeed and a revert can never mask a broken invariant. Nine
 invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
@@ -407,15 +436,16 @@ recomputed independently from the raw records, no duplicate active
 latest score-history snapshot matching the live score whenever no
 time has passed since the last change touching that scope (a warp ages
 every attestation, so snapshots drift from live scores by design after
-one), and the strike mirror matching the registry with `attesterWeight`
-0 exactly while suspended and 1–3 otherwise. Baseline: 8 invariants × 256 runs × depth 100 — 25,600 handler calls
+one), the strike mirror matching the registry with `attesterWeight`
+0 exactly while suspended and 1–3 otherwise, and the attestation count
+staying frozen while the registry is paused. Baseline: 9 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 4,688,594 gas, 21,659 bytes runtime).
+per-function gas (deploy 4,898,649 gas, 22,282 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 136 tests (129 unit + 7 invariants)
+forge test          # 196 tests (187 unit + 9 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 

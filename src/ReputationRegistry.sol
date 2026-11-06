@@ -51,6 +51,17 @@ pragma solidity 0.8.24;
 ///      it is frozen at issuance, the live score moving afterwards
 ///      does not invalidate it until it expires (at most 90 days)
 ///      or the owner revokes it.
+///      Governance and safety: the owner may pause the registry in an
+///      emergency (a bug, a spam wave, a compromised relayer). While
+///      paused, no new attestation can be created or updated and no
+///      evidence or score proof can be issued — but safety exits stay
+///      open: attestations can still be revoked and disputes can
+///      still be raised, resolved, and expired, so a pause can never
+///      trap a subject under a bad attestation. Ownership itself is
+///      transferable in two steps (initiate, then the new owner
+///      accepts), so a lost or mistyped owner key cannot lock the
+///      registry forever, and a transfer to the wrong address can be
+///      cancelled before it is accepted.
 contract ReputationRegistry {
     enum Category {
         Overall,
@@ -173,6 +184,10 @@ contract ReputationRegistry {
     error ExpiredSignature();
     error InvalidSignature();
     error NotOwner();
+    error RegistryPaused();
+    error RegistryNotPaused();
+    error NotPendingOwner();
+    error NoPendingTransfer();
     error AttestationExpired();
     error AttesterSuspended();
     error InvalidProofValidity();
@@ -234,6 +249,20 @@ contract ReputationRegistry {
         uint64 expiresAt
     );
     event ScoreProofRevoked(address indexed subject);
+    event Paused(address indexed by);
+    event Unpaused(address indexed by);
+    event OwnershipTransferInitiated(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+    event OwnershipTransferCancelled(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
@@ -277,9 +306,23 @@ contract ReputationRegistry {
     /// @notice EIP-712 domain separator, fixed at deploy time.
     bytes32 public immutable DOMAIN_SEPARATOR;
 
-    /// @notice The deployer: the only account that may manage the
-    ///         verified-attester registry.
-    address public immutable owner;
+    /// @notice The registry owner: the only account that may manage
+    ///         the verified-attester registry, strike attesters, issue
+    ///         score proofs, pause the registry, and start an ownership
+    ///         transfer. Set to the deployer at construction; see
+    ///         `transferOwnership` for how it changes hands.
+    address public owner;
+
+    /// @notice The address that may accept a pending ownership
+    ///         transfer (see `transferOwnership`). Zero when no
+    ///         transfer is in flight.
+    address public pendingOwner;
+
+    /// @notice Whether the registry is paused: while true, no new
+    ///         attestation can be created or updated and no evidence
+    ///         or score proof can be issued. Revokes and dispute
+    ///         actions stay available (see `pause`).
+    bool public paused;
 
     /// @notice Verified attesters, set by the owner (see
     ///         `setVerifiedAttester`).
@@ -369,6 +412,7 @@ contract ReputationRegistry {
     ///         Evidence is metadata only; changing it never touches the
     ///         score, the decay clock, or the score history.
     function setEvidence(uint256 id, bytes32 evidenceHash) external {
+        if (paused) revert RegistryPaused();
         if (id >= _attestations.length) revert UnknownAttestation();
         Attestation storage a = _attestations[id];
         if (a.attester != msg.sender) revert NotAttester();
@@ -538,6 +582,7 @@ contract ReputationRegistry {
         bytes32 evidenceHash,
         bool replaceEvidence
     ) internal returns (uint256 id) {
+        if (paused) revert RegistryPaused();
         if (subject == address(0)) revert ZeroAddress();
         if (subject == attester) revert SelfAttestation();
         if (score > MAX_SCORE) revert InvalidScore();
@@ -819,6 +864,7 @@ contract ReputationRegistry {
         uint64 validFor
     ) external returns (ScoreProof memory proof) {
         if (msg.sender != owner) revert NotOwner();
+        if (paused) revert RegistryPaused();
         if (subject == address(0)) revert ZeroAddress();
         if (validFor == 0 || validFor > MAX_PROOF_VALIDITY) {
             revert InvalidProofValidity();
@@ -1358,6 +1404,76 @@ contract ReputationRegistry {
         if (msg.sender != owner) revert NotOwner();
         expiryDuration = duration;
         emit ExpiryDurationUpdated(duration);
+    }
+
+    /// @notice Freeze the registry in an emergency: a bug, a spam
+    ///         wave, a compromised relayer. Only the owner may call
+    ///         this. While paused, no attestation can be created or
+    ///         updated (direct, batch, or signed) and no evidence or
+    ///         score proof can be issued. Deliberately NOT blocked:
+    ///         revoking an attestation, and raising, resolving, or
+    ///         expiring a dispute — a pause must never trap a subject
+    ///         under a bad attestation, and the owner's own admin
+    ///         controls (verify, strike, expiry) keep working so the
+    ///         problem that caused the pause can be fixed while it
+    ///         is in force. Scores, tiers, leaderboards, and all reads
+    ///         keep working: pausing freezes writes, not the registry.
+    function pause() external {
+        if (msg.sender != owner) revert NotOwner();
+        if (paused) revert RegistryPaused();
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    /// @notice Unfreeze the registry after a pause. Only the owner
+    ///         may call this. Attestations pick up exactly where they
+    ///         left off — a pause never rewrites records, scores, or
+    ///         the decay clock.
+    function unpause() external {
+        if (msg.sender != owner) revert NotOwner();
+        if (!paused) revert RegistryNotPaused();
+        paused = false;
+        emit Unpaused(msg.sender);
+    }
+
+    /// @notice Start handing the registry to a new owner. Only the
+    ///         current owner may call this. Nothing changes yet: the
+    ///         new owner must call `acceptOwnership` themselves, so a
+    ///         typo cannot hand the registry to a dead address, and a
+    ///         transfer started in error can be cancelled before it
+    ///         lands. Starting a second transfer overwrites the first
+    ///         pending one. Works while paused — governance is not a
+    ///         reputation write.
+    function transferOwnership(address newOwner) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (newOwner == address(0)) revert ZeroAddress();
+        pendingOwner = newOwner;
+        emit OwnershipTransferInitiated(owner, newOwner);
+    }
+
+    /// @notice Accept a pending ownership transfer. Only the address
+    ///         named in `transferOwnership` may call this. The old
+    ///         owner loses every admin right the moment this lands:
+    ///         verify, strike, pause, proof issuance, and starting the
+    ///         next transfer all move to the new owner.
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        address previousOwner = owner;
+        owner = pendingOwner;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(previousOwner, owner);
+    }
+
+    /// @notice Cancel a pending ownership transfer. Only the current
+    ///         owner may call this. The pending address loses the
+    ///         right to accept, and the current owner keeps the
+    ///         registry.
+    function cancelOwnershipTransfer() external {
+        if (msg.sender != owner) revert NotOwner();
+        if (pendingOwner == address(0)) revert NoPendingTransfer();
+        address cancelled = pendingOwner;
+        pendingOwner = address(0);
+        emit OwnershipTransferCancelled(owner, cancelled);
     }
 
     /// @notice When an attestation stops counting toward scores: its

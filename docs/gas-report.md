@@ -5,7 +5,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/ScoreHistory.t.sol`, `test/ScorePreview.t.sol`,
 `test/Evidence.t.sol`, `test/VerifiedAttesters.t.sol`,
 `test/AttestationExpiry.t.sol`, `test/CategoryReads.t.sol`, and
-`test/AttesterStrikes.t.sol`, `test/ScoreProofs.t.sol`.
+`test/AttesterStrikes.t.sol`, `test/ScoreProofs.t.sol`,
+`test/Governance.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -14,8 +15,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 4,688,594 gas |
-| Runtime size | 21,659 bytes |
+| Deployment cost | 4,898,649 gas |
+| Runtime size | 22,282 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -78,6 +79,21 @@ two-slot reset (~34k gas avg). `verifyScoreProof` (~9k gas avg)
 and `scoreProofOf` (~14k gas) are pure reads, views for off-chain
 `eth_call`.
 
+Governance & safety added ~210k gas to deployment (+623 bytes): the
+mutable `owner` plus `pendingOwner` and `paused` slots, the
+`pause` / `unpause` / `transferOwnership` / `acceptOwnership` /
+`cancelOwnershipTransfer` functions plus five events, and the
+`RegistryPaused` guard in `_attest` (plus `setEvidence` and
+`issueScoreProof`). The governance calls are all single-slot writes:
+`pause` averages ~42k gas (first pause in a test ~47k cold),
+`unpause` ~25k, `transferOwnership` ~38k (first ~48k cold),
+`acceptOwnership` ~27k, `cancelOwnershipTransfer` ~25k. The pause
+guard costs `attest` one extra SLOAD per call — its average barely
+moves across the wider call mix — and a reverted call while paused
+costs only the 21k-gas base plus the checks, since `_attest` reverts
+before any state change (and a signed attestation reverts before its
+nonce is consumed, because the whole transaction rolls back).
+
 Attester strikes & suspension added ~187k gas to deployment
 (+1,208 bytes): the `_strikes` mapping, `strikeAttester` /
 `clearStrikes` / `strikes` / `isSuspended` plus two events, the
@@ -104,6 +120,11 @@ blocked call costs only the 21k-gas base plus the checks.
 | `strikeAttester` | 21,677 | 35,135 | 28,697 | 45,797 | 43 |
 | `clearStrikes` | 21,697 | 22,433 | 21,902 | 23,333 | 5 |
 | `setExpiryDuration` | 21,708 | 26,729 | 27,776 | 27,788 | 15 |
+| `pause` | 23,472 | 42,377 | 46,857 | 46,857 | 19 |
+| `unpause` | 23,494 | 24,849 | 24,964 | 25,634 | 7 |
+| `transferOwnership` | 23,879 | 38,275 | 47,898 | 47,898 | 11 |
+| `acceptOwnership` | 23,455 | 26,676 | 25,876 | 33,098 | 6 |
+| `cancelOwnershipTransfer` | 23,517 | 24,898 | 25,525 | 25,652 | 3 |
 | `disputeAttestation` | 26,178 | 112,460 | 102,642 | 245,994 | 21 |
 | `revokeAttestation` | 23,678 | 89,316 | 80,473 | 272,153 | 15 |
 | `resolveDispute` | 26,275 | 127,249 | 140,289 | 238,172 | 12 |
