@@ -1548,6 +1548,8 @@ contract ReputationRegistry {
     ///         order — the directory view behind "show me all Trusted
     ///         freelancers". `limit` is clamped to the matching set and a
     ///         limit of 0 returns an empty array, like the leaderboards.
+    ///         Subjects that opted out of public discovery are not
+    ///         listed in any tier (see `setLeaderboardOptOut`).
     ///         Querying `Tier.Unranked` includes subjects whose attestations
     ///         are all revoked or disputed now (they still hold the tier,
     ///         just with no active score behind it); subjects that never
@@ -1589,7 +1591,8 @@ contract ReputationRegistry {
     ///         toward more active attestations, then toward the subject
     ///         seen first (insertion sort is stable, so the ranking is
     ///         deterministic). Subjects with no active attestations are
-    ///         excluded, and `limit` is clamped to the ranked set — a limit
+    ///         excluded, as are subjects that opted out of public
+    ///         discovery (see `setLeaderboardOptOut`), and `limit` is clamped to the ranked set — a limit
     ///         of 0 returns an empty array. This is a view over the whole
     ///         subject set, so it grows linearly with registered subjects;
     ///         frontends should page with a small limit on a busy registry.
