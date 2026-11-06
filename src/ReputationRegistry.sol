@@ -24,6 +24,10 @@ pragma solidity 0.8.24;
 ///      they believe is unfair; disputed attestations are excluded from
 ///      scores until the attester upholds them, concedes (revokes), or the
 ///      30-day dispute window lapses and the subject reinstates them.
+///      If the attester ignores a dispute for 7 days, the subject may
+///      escalate it to the registry owner, who arbitrates it — upholding
+///      or conceding on the attester's behalf — so an unresponsive
+///      attester cannot stall a dispute for the full 30 days.
 ///      Attestations expire: after `expiryDuration` (730 days by
 ///      default, owner-configurable, 0 disables expiry) an attestation
 ///      stops counting toward every score until the attester
@@ -95,6 +99,7 @@ contract ReputationRegistry {
         bool disputed;
         bytes32 disputeReason; // keccak256 of off-chain dispute text, or 0
         uint64 disputedAt;
+        bool escalated; // subject escalated the open dispute to the owner
     }
 
     struct Score {
@@ -190,6 +195,9 @@ contract ReputationRegistry {
     error AlreadyDisputed();
     error NotDisputed();
     error DisputeNotExpired();
+    error NotEscalated();
+    error AlreadyEscalated();
+    error EscalationTooEarly();
     error UnknownAttestation();
     error ExpiredSignature();
     error InvalidSignature();
@@ -248,6 +256,17 @@ contract ReputationRegistry {
         address indexed attester,
         address indexed subject
     );
+    event DisputeEscalated(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject
+    );
+    event DisputeResolvedByOwner(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject,
+        bool upheld
+    );
     event AttesterVerified(address indexed attester, bool verified);
     event AttesterStruck(address indexed attester, uint256 strikes);
     event StrikesCleared(address indexed attester);
@@ -302,6 +321,13 @@ contract ReputationRegistry {
     /// @notice How long an attester has to answer a dispute before the
     ///         subject may reinstate the attestation unilaterally.
     uint256 public constant DISPUTE_WINDOW = 30 days;
+
+    /// @notice How long a dispute must sit unanswered before the subject
+    ///         may escalate it to the owner for arbitration: long enough
+    ///         that the attester had a fair chance to answer, short
+    ///         enough that a stalled dispute does not hang for the full
+    ///         30-day window.
+    uint256 public constant ESCALATION_DELAY = 7 days;
 
     /// @notice Longest a score proof may stay valid: a certificate must
     ///         be re-issued regularly, so a stale reputation cannot be
@@ -833,7 +859,8 @@ contract ReputationRegistry {
                 revoked: false,
                 disputed: false,
                 disputeReason: bytes32(0),
-                disputedAt: 0
+                disputedAt: 0,
+                escalated: false
             })
         );
         _subjectAttestations[subject].push(id);
@@ -888,6 +915,7 @@ contract ReputationRegistry {
         a.disputed = false;
         a.disputeReason = bytes32(0);
         a.disputedAt = 0;
+        a.escalated = false;
         _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         emit AttestationRevoked(id, msg.sender, a.subject);
         _recordSnapshot(a.subject, a.category);
@@ -929,12 +957,14 @@ contract ReputationRegistry {
             a.disputed = false;
             a.disputeReason = bytes32(0);
             a.disputedAt = 0;
+            a.escalated = false;
             a.updatedAt = uint64(block.timestamp);
         } else {
             a.revoked = true;
             a.disputed = false;
             a.disputeReason = bytes32(0);
             a.disputedAt = 0;
+            a.escalated = false;
             _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         }
         emit DisputeResolved(id, a.attester, a.subject, uphold);
@@ -957,8 +987,72 @@ contract ReputationRegistry {
         a.disputed = false;
         a.disputeReason = bytes32(0);
         a.disputedAt = 0;
+        a.escalated = false;
         emit DisputeExpired(id, a.attester, a.subject);
         _recordSnapshot(a.subject, a.category);
+    }
+
+    /// @notice Escalate an unanswered dispute to the registry owner for
+    ///         arbitration. Only the subject may escalate, only once the
+    ///         attester has had ESCALATION_DELAY (7 days) to answer, and
+    ///         only while the dispute is still open. Escalation changes
+    ///         no score — the record stays excluded — it only opens the
+    ///         owner-arbitration path, so an unresponsive attester cannot
+    ///         stall a dispute for the full 30-day window. Like the other
+    ///         dispute exits, escalation stays open while paused.
+    function escalateDispute(uint256 id) external {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        Attestation storage a = _attestations[id];
+        if (a.subject != msg.sender) revert NotSubject();
+        if (!a.disputed) revert NotDisputed();
+        if (a.escalated) revert AlreadyEscalated();
+        if (block.timestamp < uint256(a.disputedAt) + ESCALATION_DELAY) {
+            revert EscalationTooEarly();
+        }
+        a.escalated = true;
+        emit DisputeEscalated(id, a.attester, a.subject);
+    }
+
+    /// @notice Arbitrate an escalated dispute as the registry owner.
+    ///         Same outcome as the attester resolving it: upholding
+    ///         clears the dispute (and refreshes the decay clock: the
+    ///         attestation is re-confirmed); conceding revokes the
+    ///         attestation, freeing the subject to be re-attested later.
+    ///         The attester may still resolve the dispute themselves
+    ///         after escalation — whichever resolution lands first
+    ///         settles it. Owner arbitration stays open while paused,
+    ///         like every other dispute exit.
+    function resolveDisputeAsOwner(uint256 id, bool uphold) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (id >= _attestations.length) revert UnknownAttestation();
+        Attestation storage a = _attestations[id];
+        if (!a.disputed) revert NotDisputed();
+        if (!a.escalated) revert NotEscalated();
+        if (uphold) {
+            a.disputed = false;
+            a.disputeReason = bytes32(0);
+            a.disputedAt = 0;
+            a.escalated = false;
+            a.updatedAt = uint64(block.timestamp);
+        } else {
+            a.revoked = true;
+            a.disputed = false;
+            a.disputeReason = bytes32(0);
+            a.disputedAt = 0;
+            a.escalated = false;
+            _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
+        }
+        emit DisputeResolvedByOwner(id, a.attester, a.subject, uphold);
+        _recordSnapshot(a.subject, a.category);
+    }
+
+    /// @notice Whether the open dispute on an attestation has been
+    ///         escalated to the owner for arbitration.
+    function isDisputeEscalated(
+        uint256 id
+    ) external view returns (bool) {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        return _attestations[id].escalated;
     }
 
     /// @notice Weighted average score across all active attestations.
