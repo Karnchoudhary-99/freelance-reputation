@@ -7,7 +7,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/AttestationExpiry.t.sol`, `test/CategoryReads.t.sol`, and
 `test/AttesterStrikes.t.sol`, `test/ScoreProofs.t.sol`,
 `test/Governance.t.sol`, `test/Delegation.t.sol`,
-`test/DisputeEscalation.t.sol`, and `test/BatchReads.t.sol`.
+`test/DisputeEscalation.t.sol`, `test/BatchReads.t.sol`, and
+`test/LeaderboardOptOut.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -16,8 +17,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 5,900,469 gas |
-| Runtime size | 26,913 bytes |
+| Deployment cost | 5,972,774 gas |
+| Runtime size | 27,247 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -149,6 +150,15 @@ on 4-subject inputs `getScores` averages ~34k gas and `getTiers`
 Cost grows linearly with the input list and with each subject's
 attestation count, so frontends should keep batches small on a
 busy registry.
+
+Leaderboard opt-out added ~72k gas to deployment (+334 bytes): one
+`mapping(address => bool)` plus the `setLeaderboardOptOut` /
+`isLeaderboardOptedOut` pair and one event. `setLeaderboardOptOut`
+is a single-slot write (~38k gas avg, ~45k on the first opt-out in
+a test). The listing check itself is one cold/warm SLOAD per subject
+inside the leaderboard and tier-directory scans, so board reads
+grow by a negligible amount; scores, tiers, and attestations are
+untouched because opt-out never enters the scoring path.
 
 ## Function costs (gas)
 
