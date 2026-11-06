@@ -412,6 +412,7 @@ contract ReputationRegistry {
     ///         Evidence is metadata only; changing it never touches the
     ///         score, the decay clock, or the score history.
     function setEvidence(uint256 id, bytes32 evidenceHash) external {
+        if (paused) revert RegistryPaused();
         if (id >= _attestations.length) revert UnknownAttestation();
         Attestation storage a = _attestations[id];
         if (a.attester != msg.sender) revert NotAttester();
@@ -863,6 +864,7 @@ contract ReputationRegistry {
         uint64 validFor
     ) external returns (ScoreProof memory proof) {
         if (msg.sender != owner) revert NotOwner();
+        if (paused) revert RegistryPaused();
         if (subject == address(0)) revert ZeroAddress();
         if (validFor == 0 || validFor > MAX_PROOF_VALIDITY) {
             revert InvalidProofValidity();
