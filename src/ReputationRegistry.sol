@@ -1850,15 +1850,19 @@ contract ReputationRegistry {
     ///         at `timestamp`, measured against time `when` instead of the
     ///         current block time — the building block of the score-preview
     ///         views. A `when` before the update counts as full weight:
-    ///         the attestation had not aged yet at that point.
+    ///         the attestation had not aged yet at that point. The
+    ///         periods are the currently configured ones (see
+    ///         `setDecayPeriods`), so this is a view, not a pure function:
+    ///         retuning the schedule changes what it returns for the
+    ///         same inputs.
     function decayFactorBpsAt(
         uint64 timestamp,
         uint64 when
-    ) public pure returns (uint256) {
+    ) public view returns (uint256) {
         if (when <= timestamp) return DECAY_FULL_BPS;
         uint256 age = when - timestamp;
-        if (age < DECAY_FULL_PERIOD) return DECAY_FULL_BPS;
-        if (age < DECAY_HALF_PERIOD) return DECAY_HALF_BPS;
+        if (age < decayFullPeriod) return DECAY_FULL_BPS;
+        if (age < decayHalfPeriod) return DECAY_HALF_BPS;
         return DECAY_QUARTER_BPS;
     }
 
