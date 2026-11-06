@@ -8,7 +8,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/AttesterStrikes.t.sol`, `test/ScoreProofs.t.sol`,
 `test/Governance.t.sol`, `test/Delegation.t.sol`,
 `test/DisputeEscalation.t.sol`, `test/BatchReads.t.sol`,
-`test/LeaderboardOptOut.t.sol`, and `test/TopAttesters.t.sol`.
+`test/LeaderboardOptOut.t.sol`, `test/TopAttesters.t.sol`, and
+`test/DecayConfig.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -17,8 +18,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 6,276,709 gas |
-| Runtime size | 28,652 bytes |
+| Deployment cost | 6,388,637 gas |
+| Runtime size | 28,964 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -171,6 +172,16 @@ gas on the small boards in the test suite (up to 4 attesters); it
 scores every attester's own record set twice over (once for the
 active count, once for the own average), so like the subject boards
 it is a view for off-chain `eth_call`, not a transaction input.
+
+Configurable decay added ~112k gas to deployment (+312 bytes):
+two storage slots, the `setDecayPeriods` setter with its bounds
+checks, and one event. `setDecayPeriods` is a two-slot owner write
+(~29k gas avg). The ongoing cost is one extra SLOAD pair per
+`decayFactorBpsAt` call — the function is now a view, not pure —
+so every score read pays two warm storage reads more than before;
+the test suite shows no measurable move in `attest` or score-read
+averages. `DECAY_FULL_PERIOD` / `DECAY_HALF_PERIOD` remain as the
+documented deploy-time defaults.
 
 ## Function costs (gas)
 
