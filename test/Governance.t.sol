@@ -223,4 +223,113 @@ contract GovernanceTest is Test {
         assertEq(registry.attestationCount(), 2);
         assertEq(registry.getScore(bob).count, 2);
     }
+
+    function testTransferSetsPendingOwnerAndEmitsEvent() public {
+        assertEq(registry.owner(), address(this));
+        assertEq(registry.pendingOwner(), address(0));
+        vm.expectEmit(true, true, false, false, address(registry));
+        emit ReputationRegistry.OwnershipTransferInitiated(address(this), bob);
+        registry.transferOwnership(bob);
+        assertEq(registry.pendingOwner(), bob);
+        // The current owner keeps every right until acceptance lands.
+        assertEq(registry.owner(), address(this));
+        registry.pause();
+        assertTrue(registry.paused());
+    }
+
+    function testOnlyOwnerCanTransferAndCancel() public {
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.NotOwner.selector);
+        registry.transferOwnership(carol);
+        assertEq(registry.pendingOwner(), address(0));
+
+        registry.transferOwnership(bob);
+        vm.prank(carol);
+        vm.expectRevert(ReputationRegistry.NotOwner.selector);
+        registry.cancelOwnershipTransfer();
+        assertEq(registry.pendingOwner(), bob);
+    }
+
+    function testTransferRejectsZeroAddress() public {
+        vm.expectRevert(ReputationRegistry.ZeroAddress.selector);
+        registry.transferOwnership(address(0));
+        assertEq(registry.pendingOwner(), address(0));
+    }
+
+    function testAcceptOwnershipMovesEveryAdminRight() public {
+        registry.transferOwnership(bob);
+        vm.prank(bob);
+        registry.acceptOwnership();
+        assertEq(registry.owner(), bob);
+        assertEq(registry.pendingOwner(), address(0));
+
+        // Old owner lost every admin right.
+        vm.expectRevert(ReputationRegistry.NotOwner.selector);
+        registry.pause();
+        vm.expectRevert(ReputationRegistry.NotOwner.selector);
+        registry.strikeAttester(carol);
+        vm.expectRevert(ReputationRegistry.NotOwner.selector);
+        registry.transferOwnership(carol);
+
+        // New owner has them all.
+        vm.prank(bob);
+        registry.pause();
+        assertTrue(registry.paused());
+        vm.prank(bob);
+        registry.unpause();
+        assertFalse(registry.paused());
+    }
+
+    function testAcceptByNonPendingReverts() public {
+        registry.transferOwnership(bob);
+        vm.prank(carol);
+        vm.expectRevert(ReputationRegistry.NotPendingOwner.selector);
+        registry.acceptOwnership();
+        assertEq(registry.owner(), address(this));
+        assertEq(registry.pendingOwner(), bob);
+    }
+
+    function testCancelClearsPendingAndBlocksAccept() public {
+        registry.transferOwnership(bob);
+        vm.expectEmit(true, true, false, false, address(registry));
+        emit ReputationRegistry.OwnershipTransferCancelled(address(this), bob);
+        registry.cancelOwnershipTransfer();
+        assertEq(registry.pendingOwner(), address(0));
+
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.NotPendingOwner.selector);
+        registry.acceptOwnership();
+        assertEq(registry.owner(), address(this));
+    }
+
+    function testCancelWithNoPendingReverts() public {
+        vm.expectRevert(ReputationRegistry.NoPendingTransfer.selector);
+        registry.cancelOwnershipTransfer();
+    }
+
+    function testTransferWhilePausedAllowedAndNewOwnerCanUnpause() public {
+        registry.pause();
+        registry.transferOwnership(bob);
+        vm.prank(bob);
+        registry.acceptOwnership();
+        assertEq(registry.owner(), bob);
+        assertTrue(registry.paused());
+        vm.prank(bob);
+        registry.unpause();
+        assertFalse(registry.paused());
+    }
+
+    function testSecondTransferOverwritesFirst() public {
+        registry.transferOwnership(bob);
+        registry.transferOwnership(carol);
+        assertEq(registry.pendingOwner(), carol);
+
+        vm.prank(bob);
+        vm.expectRevert(ReputationRegistry.NotPendingOwner.selector);
+        registry.acceptOwnership();
+
+        vm.prank(carol);
+        registry.acceptOwnership();
+        assertEq(registry.owner(), carol);
+    }
 }
