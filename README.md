@@ -290,6 +290,21 @@ Both views read decayed scores, so a tier directory reflects
 reputation as it stands today, not as it stood when the
 attestations were fresh.
 
+### Leaderboard opt-out
+
+A freelancer may not want to be listed publicly, even with a good
+score. `setLeaderboardOptOut(true)` hides the caller — and only the
+caller, since the caller IS the subject — from `getLeaderboard`,
+`getLeaderboardByCategory`, and `getSubjectsByTier`. Opting out is a
+listing rule, not a score rule: the subject's scores, tier, and
+attestations stay readable directly (`getScore`, `tierOf`,
+`getProfile`, `getAttestations`), they keep receiving new
+attestations, and `subjectCount` still counts them.
+`setLeaderboardOptOut(false)` opts back in, restoring the listing
+with its rank. `isLeaderboardOptedOut(subject)` reports the choice,
+and opting out before ever receiving an attestation applies as soon
+as the subject is listed.
+
 ### Score history
 
 Every state change — attest, re-attest, revoke, dispute raise,

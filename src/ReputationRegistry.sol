@@ -268,6 +268,7 @@ contract ReputationRegistry {
         bool upheld
     );
     event AttesterVerified(address indexed attester, bool verified);
+    event LeaderboardOptOut(address indexed subject, bool optedOut);
     event AttesterStruck(address indexed attester, uint256 strikes);
     event StrikesCleared(address indexed attester);
     event ExpiryDurationUpdated(uint64 expiryDuration);
@@ -418,6 +419,14 @@ contract ReputationRegistry {
     // subjects stay listed but rank with count 0 and are excluded.
     address[] private _subjects;
     mapping(address => bool) private _isSubject;
+    // subject => whether they opted out of public discovery
+    // (leaderboards and the tier directory). Opting out hides the
+    // subject from public listings only: their scores, tier, and
+    // attestations stay readable directly, and they keep receiving
+    // attestations. A subject that never received an attestation
+    // cannot opt out of a listing they are not on — the setter
+    // simply records the choice for when they are listed.
+    mapping(address => bool) private _leaderboardOptOut;
     // subject => category => snapshots, in chronological order. Every
     // state change appends an Overall snapshot plus, when the changed
     // attestation belongs to a specific category, one for that category.
@@ -1539,6 +1548,8 @@ contract ReputationRegistry {
     ///         order — the directory view behind "show me all Trusted
     ///         freelancers". `limit` is clamped to the matching set and a
     ///         limit of 0 returns an empty array, like the leaderboards.
+    ///         Subjects that opted out of public discovery are not
+    ///         listed in any tier (see `setLeaderboardOptOut`).
     ///         Querying `Tier.Unranked` includes subjects whose attestations
     ///         are all revoked or disputed now (they still hold the tier,
     ///         just with no active score behind it); subjects that never
@@ -1550,6 +1561,9 @@ contract ReputationRegistry {
         address[] memory matched = new address[](_subjects.length);
         uint256 matchedCount;
         for (uint256 i = 0; i < _subjects.length; i++) {
+            // The tier directory is public discovery too: opted-out
+            // subjects are not listed in any tier.
+            if (_leaderboardOptOut[_subjects[i]]) continue;
             Score memory s = _score(
                 _subjectAttestations[_subjects[i]],
                 Category.Overall,
@@ -1577,7 +1591,8 @@ contract ReputationRegistry {
     ///         toward more active attestations, then toward the subject
     ///         seen first (insertion sort is stable, so the ranking is
     ///         deterministic). Subjects with no active attestations are
-    ///         excluded, and `limit` is clamped to the ranked set — a limit
+    ///         excluded, as are subjects that opted out of public
+    ///         discovery (see `setLeaderboardOptOut`), and `limit` is clamped to the ranked set — a limit
     ///         of 0 returns an empty array. This is a view over the whole
     ///         subject set, so it grows linearly with registered subjects;
     ///         frontends should page with a small limit on a busy registry.
@@ -1603,6 +1618,27 @@ contract ReputationRegistry {
         return _rankedLeaderboard(category, filterCategory, limit);
     }
 
+    /// @notice Opt yourself out of — or back into — public discovery:
+    ///         the leaderboards and the tier directory. Only the subject
+    ///         themself may call this (the caller IS the subject), so no
+    ///         one can hide or expose someone else. Opting out never
+    ///         touches scores, tiers, attestations, or proofs: a hidden
+    ///         freelancer's reputation is still readable directly, just
+    ///         not listed publicly. A subject may opt out before ever
+    ///         receiving an attestation; the choice applies as soon as
+    ///         they are listed.
+    function setLeaderboardOptOut(bool optOut) external {
+        _leaderboardOptOut[msg.sender] = optOut;
+        emit LeaderboardOptOut(msg.sender, optOut);
+    }
+
+    /// @notice Whether a subject opted out of public discovery.
+    function isLeaderboardOptedOut(
+        address subject
+    ) external view returns (bool) {
+        return _leaderboardOptOut[subject];
+    }
+
     /// @notice Shared ranking behind `getLeaderboard` and
     ///         `getLeaderboardByCategory`: score every subject, drop the
     ///         ones with no active attestations in scope, sort descending
@@ -1618,6 +1654,10 @@ contract ReputationRegistry {
         );
         uint256 rankedCount;
         for (uint256 i = 0; i < _subjects.length; i++) {
+            // Opted-out subjects never appear on a public board, even
+            // with active attestations — privacy is a listing rule,
+            // not a score rule.
+            if (_leaderboardOptOut[_subjects[i]]) continue;
             Score memory s = _score(
                 _subjectAttestations[_subjects[i]],
                 category,
