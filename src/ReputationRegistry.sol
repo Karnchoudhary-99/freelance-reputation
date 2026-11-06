@@ -1578,6 +1578,115 @@ contract ReputationRegistry {
         return Tier.Emerging;
     }
 
+    /// @notice Milestone badges: where tiers answer "how good is this
+    ///         freelancer right now", badges answer "what have they
+    ///         achieved" — a subject can hold several at once, and they
+    ///         are earned in order, so a Veteran is also a RisingStar.
+    ///         Unlike tiers, which only need a handful of strong
+    ///         endorsements, the higher badges demand volume as well:
+    ///         TopRated needs 25 active attestations, Veteran 50.
+    enum Badge {
+        RisingStar,
+        HighlyRated,
+        TopRated,
+        Veteran
+    }
+
+    /// @notice Badge thresholds: (minimum average scaled by 100, minimum
+    ///         active attestations). Veteran is the volume badge — it
+    ///         asks for a solid average over a long track record, not a
+    ///         perfect one.
+    uint256 public constant BADGE_RISING_STAR_AVG = 6000;
+    uint256 public constant BADGE_RISING_STAR_COUNT = 5;
+    uint256 public constant BADGE_HIGHLY_RATED_AVG = 7500;
+    uint256 public constant BADGE_HIGHLY_RATED_COUNT = 10;
+    uint256 public constant BADGE_TOP_RATED_AVG = 8500;
+    uint256 public constant BADGE_TOP_RATED_COUNT = 25;
+    uint256 public constant BADGE_VETERAN_AVG = 6000;
+    uint256 public constant BADGE_VETERAN_COUNT = 50;
+
+    /// @notice The milestone badges a subject holds right now, in enum
+    ///         order — the list a marketplace renders next to a
+    ///         freelancer's name. Badges are a pure view over the live
+    ///         decayed score, so they are earned and lost with the score
+    ///         itself: revocations, disputes, expiry, and decay can all
+    ///         take a badge away, exactly as they move tiers. Opting out
+    ///         of public discovery (see `setLeaderboardOptOut`) does NOT
+    ///         hide badges: they are a direct read about one subject,
+    ///         like `tierOf`, not a discovery listing. Unknown subjects
+    ///         hold no badges.
+    function getBadges(
+        address subject
+    ) external view returns (Badge[] memory) {
+        return
+            _badgesOf(
+                _score(_subjectAttestations[subject], Category.Overall, false)
+            );
+    }
+
+    /// @notice Badges as they will stand (or stood) at time `when`, from
+    ///         the decay-preview score — so a frontend can warn that a
+    ///         freelancer loses TopRated in N days unless they land fresh
+    ///         work. Same preview semantics as `getScoreAt` and
+    ///         `tierOfAt`.
+    function getBadgesAt(
+        address subject,
+        uint64 when
+    ) external view returns (Badge[] memory) {
+        return
+            _badgesOf(
+                _scoreAt(
+                    _subjectAttestations[subject],
+                    Category.Overall,
+                    false,
+                    when
+                )
+            );
+    }
+
+    /// @notice Badges for many subjects in one call, in the same order
+    ///         as `subjects` — one RPC call renders the badge row of a
+    ///         whole directory page. Unknown subjects return an empty
+    ///         array, exactly like `getBadges` does for them. An empty
+    ///         input returns an empty array.
+    function getBadgesFor(
+        address[] calldata subjects
+    ) external view returns (Badge[][] memory badges) {
+        badges = new Badge[][](subjects.length);
+        for (uint256 i = 0; i < subjects.length; i++) {
+            badges[i] = _badgesOf(
+                _score(
+                    _subjectAttestations[subjects[i]],
+                    Category.Overall,
+                    false
+                )
+            );
+        }
+    }
+
+    function _badgesOf(Score memory s) internal pure returns (Badge[] memory) {
+        uint256 earned;
+        bool risingStar = s.average >= BADGE_RISING_STAR_AVG &&
+            s.count >= BADGE_RISING_STAR_COUNT;
+        bool highlyRated = s.average >= BADGE_HIGHLY_RATED_AVG &&
+            s.count >= BADGE_HIGHLY_RATED_COUNT;
+        bool topRated = s.average >= BADGE_TOP_RATED_AVG &&
+            s.count >= BADGE_TOP_RATED_COUNT;
+        bool veteran = s.average >= BADGE_VETERAN_AVG &&
+            s.count >= BADGE_VETERAN_COUNT;
+        if (risingStar) earned++;
+        if (highlyRated) earned++;
+        if (topRated) earned++;
+        if (veteran) earned++;
+        Badge[] memory badges = new Badge[](earned);
+        uint256 at;
+        if (risingStar) badges[at++] = Badge.RisingStar;
+        if (highlyRated) badges[at++] = Badge.HighlyRated;
+        if (topRated) badges[at++] = Badge.TopRated;
+        if (veteran) badges[at++] = Badge.Veteran;
+        return badges;
+    }
+
     /// @notice Overall + all four category scores in one call.
     function getProfile(
         address subject
