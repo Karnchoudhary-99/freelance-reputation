@@ -1470,6 +1470,25 @@ contract ReputationRegistry {
         profile.reliability = _scoreAt(ids, Category.Reliability, true, when);
     }
 
+    /// @notice Overall scores for many subjects in one call, in the same
+    ///         order as `subjects` — the multicall-style read a
+    ///         marketplace needs to render a list of freelancers without
+    ///         one RPC call per row. Unknown subjects (never attested)
+    ///         return a zero Score, exactly like `getScore` does for
+    ///         them. An empty input returns an empty array.
+    function getScores(
+        address[] calldata subjects
+    ) external view returns (Score[] memory scores) {
+        scores = new Score[](subjects.length);
+        for (uint256 i = 0; i < subjects.length; i++) {
+            scores[i] = _score(
+                _subjectAttestations[subjects[i]],
+                Category.Overall,
+                false
+            );
+        }
+    }
+
     /// @notice Every subject currently sitting in one tier, in first-seen
     ///         order — the directory view behind "show me all Trusted
     ///         freelancers". `limit` is clamped to the matching set and a
