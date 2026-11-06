@@ -1489,6 +1489,32 @@ contract ReputationRegistry {
         }
     }
 
+    /// @notice Full profiles (overall + all four category scores) for
+    ///         many subjects in one call, in the same order as
+    ///         `subjects` — one RPC call renders a whole directory page.
+    ///         Unknown subjects return an all-zero Profile, exactly like
+    ///         `getProfile` does for them. An empty input returns an
+    ///         empty array. Like the other batch read, this is a view
+    ///         for off-chain `eth_call`: it scans every subject's
+    ///         attestations, so it grows linearly with the input list.
+    function getProfiles(
+        address[] calldata subjects
+    ) external view returns (Profile[] memory profiles) {
+        profiles = new Profile[](subjects.length);
+        for (uint256 i = 0; i < subjects.length; i++) {
+            uint256[] storage ids = _subjectAttestations[subjects[i]];
+            profiles[i].overall = _score(ids, Category.Overall, false);
+            profiles[i].quality = _score(ids, Category.Quality, true);
+            profiles[i].communication = _score(
+                ids,
+                Category.Communication,
+                true
+            );
+            profiles[i].timeliness = _score(ids, Category.Timeliness, true);
+            profiles[i].reliability = _score(ids, Category.Reliability, true);
+        }
+    }
+
     /// @notice Every subject currently sitting in one tier, in first-seen
     ///         order — the directory view behind "show me all Trusted
     ///         freelancers". `limit` is clamped to the matching set and a
