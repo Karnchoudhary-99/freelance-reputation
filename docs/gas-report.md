@@ -5,7 +5,7 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/ScoreHistory.t.sol`, `test/ScorePreview.t.sol`,
 `test/Evidence.t.sol`, `test/VerifiedAttesters.t.sol`,
 `test/AttestationExpiry.t.sol`, `test/CategoryReads.t.sol`, and
-`test/AttesterStrikes.t.sol`.
+`test/AttesterStrikes.t.sol`, `test/ScoreProofs.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -14,8 +14,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 4,278,345 gas |
-| Runtime size | 19,746 bytes |
+| Deployment cost | 4,688,594 gas |
+| Runtime size | 21,659 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -64,6 +64,19 @@ different shape (366,199 → 376,036 across the wider call mix).
 full history twice: once to count, once to collect the page);
 `latestScoreSnapshot` is a single storage read at ~11k gas. Both are
 views for off-chain `eth_call`, not transaction inputs.
+
+Score proofs added ~410k gas to deployment (+1,913 bytes): the
+`ScoreProof` struct and its two mappings, `issueScoreProof` /
+`scoreProofOf` / `verifyScoreProof` / `revokeScoreProof` plus two
+events. The deployment jump is larger than the last few features
+because a proof freezes a full score (average, tier, count, two
+timestamps) in two mappings — `issueScoreProof` averages ~128k gas
+in the test suite (it reads the subject's full history to compute
+the live score, then writes the proof; first issue on a fresh
+subject is the high end at ~193k); `revokeScoreProof` is a
+two-slot reset (~34k gas avg). `verifyScoreProof` (~9k gas avg)
+and `scoreProofOf` (~14k gas) are pure reads, views for off-chain
+`eth_call`.
 
 Attester strikes & suspension added ~187k gas to deployment
 (+1,208 bytes): the `_strikes` mapping, `strikeAttester` /

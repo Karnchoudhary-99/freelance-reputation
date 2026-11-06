@@ -42,6 +42,15 @@ pragma solidity 0.8.24;
 ///      at all until the owner clears the strikes. Strikes are
 ///      snapshot-time only, like verification — existing records and
 ///      scores are never rewritten.
+///      Finally, the owner may issue a portable score proof for a
+///      freelancer: a frozen, expiry-bounded certificate of the
+///      subject's live overall score, tier, and attestation count.
+///      The proof lives on-chain, so any third party (a hiring
+///      platform, a client) can verify a presented proof against
+///      the registry instead of trusting a screenshot — and because
+///      it is frozen at issuance, the live score moving afterwards
+///      does not invalidate it until it expires (at most 90 days)
+///      or the owner revokes it.
 contract ReputationRegistry {
     enum Category {
         Overall,
@@ -138,6 +147,19 @@ contract ReputationRegistry {
         uint256 effectiveWeight; // decay-adjusted weight, in basis points
     }
 
+    /// @notice A portable reputation certificate: the subject's overall
+    ///         score, tier, and active-attestation count as they stood
+    ///         when the owner issued it, frozen until `expiresAt`.
+    ///         `average` is scaled by 100, like `Score.average`.
+    struct ScoreProof {
+        address subject;
+        uint256 average;
+        Tier tier;
+        uint256 count;
+        uint64 issuedAt;
+        uint64 expiresAt;
+    }
+
     error ZeroAddress();
     error SelfAttestation();
     error InvalidScore();
@@ -153,6 +175,8 @@ contract ReputationRegistry {
     error NotOwner();
     error AttestationExpired();
     error AttesterSuspended();
+    error InvalidProofValidity();
+    error NoScoreProof();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -201,6 +225,15 @@ contract ReputationRegistry {
     event AttesterStruck(address indexed attester, uint256 strikes);
     event StrikesCleared(address indexed attester);
     event ExpiryDurationUpdated(uint64 expiryDuration);
+    event ScoreProofIssued(
+        address indexed subject,
+        uint256 average,
+        Tier tier,
+        uint256 count,
+        uint64 issuedAt,
+        uint64 expiresAt
+    );
+    event ScoreProofRevoked(address indexed subject);
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
@@ -219,6 +252,11 @@ contract ReputationRegistry {
     /// @notice How long an attester has to answer a dispute before the
     ///         subject may reinstate the attestation unilaterally.
     uint256 public constant DISPUTE_WINDOW = 30 days;
+
+    /// @notice Longest a score proof may stay valid: a certificate must
+    ///         be re-issued regularly, so a stale reputation cannot be
+    ///         presented as current forever.
+    uint64 public constant MAX_PROOF_VALIDITY = 90 days;
 
     /// @notice How long an attestation counts toward scores after its
     ///         last update (attest, re-attest, or upheld dispute).
@@ -288,6 +326,10 @@ contract ReputationRegistry {
     // attestation belongs to a specific category, one for that category.
     mapping(address => mapping(Category => ScoreSnapshot[]))
         private _scoreHistory;
+    // subject => latest issued score proof (re-issuing replaces it).
+    mapping(address => ScoreProof) private _scoreProofs;
+    // subject => whether a proof was ever issued (and not revoked).
+    mapping(address => bool) private _hasScoreProof;
 
     /// @notice Attest a freelancer's work, or update your existing attestation
     ///         for the same subject + category.
@@ -760,6 +802,100 @@ contract ReputationRegistry {
         ScoreSnapshot[] storage snapshots = _scoreHistory[subject][category];
         if (snapshots.length == 0) return (snapshot, false);
         return (snapshots[snapshots.length - 1], true);
+    }
+
+    /// @notice Issue a portable score proof for a subject: a frozen
+    ///         certificate of their live overall score, tier, and
+    ///         active-attestation count, valid for `validFor` (at most
+    ///         `MAX_PROOF_VALIDITY`). Only the owner may issue — the
+    ///         proof is the registry's word, not the subject's. A
+    ///         subject with no attestations gets a valid proof of
+    ///         average 0 / tier Unranked / count 0: "no reputation
+    ///         yet" is itself a checkable claim. Re-issuing replaces
+    ///         the previous proof for the subject.
+    /// @return proof The issued proof, as stored on-chain.
+    function issueScoreProof(
+        address subject,
+        uint64 validFor
+    ) external returns (ScoreProof memory proof) {
+        if (msg.sender != owner) revert NotOwner();
+        if (subject == address(0)) revert ZeroAddress();
+        if (validFor == 0 || validFor > MAX_PROOF_VALIDITY) {
+            revert InvalidProofValidity();
+        }
+        Score memory s = _score(
+            _subjectAttestations[subject],
+            Category.Overall,
+            false
+        );
+        proof = ScoreProof({
+            subject: subject,
+            average: s.average,
+            tier: _tierOf(s),
+            count: s.count,
+            issuedAt: uint64(block.timestamp),
+            expiresAt: uint64(block.timestamp) + validFor
+        });
+        _scoreProofs[subject] = proof;
+        _hasScoreProof[subject] = true;
+        emit ScoreProofIssued(
+            subject,
+            proof.average,
+            proof.tier,
+            proof.count,
+            proof.issuedAt,
+            proof.expiresAt
+        );
+    }
+
+    /// @notice The latest issued proof for a subject, plus whether one
+    ///         exists at all (false when never issued, or after a
+    ///         revocation). An expired proof is still returned — check
+    ///         `expiresAt` against the current time, or use
+    ///         `verifyScoreProof`, which does that for you.
+    function scoreProofOf(
+        address subject
+    ) external view returns (ScoreProof memory proof, bool exists) {
+        return (_scoreProofs[subject], _hasScoreProof[subject]);
+    }
+
+    /// @notice Verify a presented proof against the registry: true
+    ///         exactly when the proof matches the latest proof issued
+    ///         for its subject, field for field, and has not expired.
+    ///         A tampered average, tier, count, or timestamp fails;
+    ///         so does a proof for a subject who never received one,
+    ///         or one revoked by the owner. Note the check is against
+    ///         the frozen proof, not the live score — a freelancer's
+    ///         reputation moving after issuance does not invalidate
+    ///         the certificate until it expires.
+    function verifyScoreProof(
+        ScoreProof calldata proof
+    ) external view returns (bool) {
+        if (!_hasScoreProof[proof.subject]) return false;
+        ScoreProof storage stored = _scoreProofs[proof.subject];
+        if (
+            stored.average != proof.average ||
+            stored.tier != proof.tier ||
+            stored.count != proof.count ||
+            stored.issuedAt != proof.issuedAt ||
+            stored.expiresAt != proof.expiresAt
+        ) {
+            return false;
+        }
+        return block.timestamp <= proof.expiresAt;
+    }
+
+    /// @notice Revoke a subject's latest score proof — for a certificate
+    ///         issued in error, or after fraud is discovered. Only the
+    ///         owner may revoke; the subject keeps their attestations
+    ///         and live score, only the certificate is withdrawn. A new
+    ///         proof may be issued afterwards.
+    function revokeScoreProof(address subject) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (!_hasScoreProof[subject]) revert NoScoreProof();
+        delete _scoreProofs[subject];
+        _hasScoreProof[subject] = false;
+        emit ScoreProofRevoked(subject);
     }
 
     /// @notice All attestations for a subject, revoked ones included
