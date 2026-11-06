@@ -411,6 +411,12 @@ contract ReputationRegistry {
     // attester => attestation ids they created (updates do not add a second
     // entry: the index tracks records, not writes)
     mapping(address => uint256[]) private _attesterAttestations;
+    // Every address that has ever attested, in first-seen order (updates
+    // and re-attestations after revocation do not add a second entry).
+    // Powers the top-attesters board; attesters whose records are all
+    // revoked now stay listed but rank with count 0 and are excluded.
+    address[] private _attesters;
+    mapping(address => bool) private _isAttester;
     // keccak256(attester, subject, category) => id + 1 (0 == none active)
     mapping(bytes32 => uint256) private _activeByKey;
     // Every address that has ever received an attestation, in first-seen
@@ -874,6 +880,10 @@ contract ReputationRegistry {
         );
         _subjectAttestations[subject].push(id);
         _attesterAttestations[attester].push(id);
+        if (!_isAttester[attester]) {
+            _isAttester[attester] = true;
+            _attesters.push(attester);
+        }
         if (!_isSubject[subject]) {
             _isSubject[subject] = true;
             _subjects.push(subject);
@@ -1327,6 +1337,13 @@ contract ReputationRegistry {
             seen++;
         }
         return out;
+    }
+
+    /// @notice How many distinct attesters have ever created an
+    ///         attestation (including attesters whose records are all
+    ///         revoked now).
+    function attesterCount() external view returns (uint256) {
+        return _attesters.length;
     }
 
     /// @notice How many records an attester has created (updates excluded).
