@@ -8,8 +8,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/AttesterStrikes.t.sol`, `test/ScoreProofs.t.sol`,
 `test/Governance.t.sol`, `test/Delegation.t.sol`,
 `test/DisputeEscalation.t.sol`, `test/BatchReads.t.sol`,
-`test/LeaderboardOptOut.t.sol`, `test/TopAttesters.t.sol`, and
-`test/DecayConfig.t.sol`.
+`test/LeaderboardOptOut.t.sol`, `test/TopAttesters.t.sol`,
+`test/DecayConfig.t.sol`, and `test/ReputationBadges.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -18,8 +18,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 6,388,637 gas |
-| Runtime size | 28,964 bytes |
+| Deployment cost | 6,702,638 gas |
+| Runtime size | 30,754 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -183,6 +183,17 @@ the test suite shows no measurable move in `attest` or score-read
 averages. `DECAY_FULL_PERIOD` / `DECAY_HALF_PERIOD` remain as the
 documented deploy-time defaults.
 
+Milestone badges added ~314k gas to deployment (+1,790 bytes): the
+`Badge` enum, eight threshold constants, the `_badgesOf` helper, and
+the `getBadges` / `getBadgesAt` / `getBadgesFor` views. Badges are
+pure views, so no write costs move at all. A badge read is one score
+scan, the same cost class as `getScore` on the same subject — the
+test-suite averages look high (`getBadges` ~116k gas) only because
+the badge tests deliberately build 25–50 attestation subjects to
+reach the TopRated and Veteran bars; on a small subject the min
+(~3.7k gas) is the honest comparison. `getBadgesFor` averages ~98k
+on the 3-subject test batches for the same reason.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -230,6 +241,9 @@ documented deploy-time defaults.
 | `getScoreByCategoryAt` (view) | 24,874 | 24,874 | 24,874 | 24,874 | 2 |
 | `getProfileAt` (view) | 47,411 | 47,411 | 47,411 | 47,411 | 1 |
 | `tierOfAt` (view) | 31,117 | 33,709 | 34,949 | 35,062 | 3 |
+| `getBadges` (view) | 3,717 | 116,193 | 53,601 | 461,439 | 18 |
+| `getBadgesAt` (view) | 3,700 | 45,544 | 53,584 | 79,349 | 3 |
+| `getBadgesFor` (view) | 873 | 98,225 | 4,568 | 289,235 | 3 |
 | `getLeaderboard` (view) | 3,134 | 38,865 | 40,049 | 60,143 | 13 |
 | `getLeaderboardByCategory` (view) | 37,573 | 71,266 | 70,875 | 128,670 | 6 |
 
