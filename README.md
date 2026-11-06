@@ -26,6 +26,7 @@ that travel with the worker, not the platform.
 - [x] Governance & safety (emergency pause, two-step ownership transfer)
 - [x] Attester delegation (expiry-bounded delegates attest on your behalf)
 - [x] Dispute escalation (subject escalates after 7 unanswered days, owner arbitrates)
+- [x] Milestone badges (RisingStar → Veteran, cumulative, decay-aware, batch reads)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -282,6 +283,32 @@ without inventing its own thresholds:
 Both conditions must hold: nine perfect attestations are Trusted, not
 Elite, and a single 100 is only Emerging. Tiers read the decayed score,
 so an aged-out reputation falls back down the tiers.
+
+### Milestone badges
+
+Where tiers answer "how good is this freelancer right now", badges
+answer "what have they achieved" — a subject can hold several at once,
+and they are earned in order, so a Veteran is also a RisingStar.
+`getBadges(subject)` returns the badges held right now, in enum order:
+
+| Badge | Rule |
+| --- | --- |
+| RisingStar | average ≥ 60 and ≥ 5 active attestations |
+| HighlyRated | average ≥ 75 and ≥ 10 active attestations |
+| TopRated | average ≥ 85 and ≥ 25 active attestations |
+| Veteran | average ≥ 60 and ≥ 50 active attestations |
+
+The higher badges demand volume as well as quality: TopRated needs 25
+active attestations, Veteran 50 — so Veteran is the long-track-record
+badge, earnable at a solid-but-not-perfect average (fifty 70s earn
+RisingStar + Veteran, but neither HighlyRated nor TopRated). Badges are
+pure views over the live decayed score, so revocations, disputes,
+expiry, and decay can all take a badge away, exactly as they move
+tiers. `getBadgesAt(subject, when)` previews badges as of any time
+(same decay-preview semantics as `getScoreAt`), and
+`getBadgesFor(subjects)` returns badges for a whole directory page in
+one call. Opting out of public discovery does not hide badges: they
+are a direct read about one subject, like `tierOf`, not a listing.
 
 ### Leaderboard
 
@@ -558,7 +585,7 @@ matching the registry with `isDelegate` true exactly while the mirrored
 expiry is still in the future, and the escalation mirror matching the
 registry with an escalated record always still disputed. Baseline: 11 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 5,625,713 gas, 25,966 bytes runtime).
+per-function gas (deploy 6,702,638 gas, 30,754 bytes runtime).
 
 ### Run it
 
