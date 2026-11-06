@@ -1515,6 +1515,26 @@ contract ReputationRegistry {
         }
     }
 
+    /// @notice Tiers for many subjects in one call, in the same order as
+    ///         `subjects` — the batch form of `tierOf`, for rendering
+    ///         badges on a list of freelancers. Unknown subjects return
+    ///         `Tier.Unranked`, exactly like `tierOf` does for them. An
+    ///         empty input returns an empty array.
+    function getTiers(
+        address[] calldata subjects
+    ) external view returns (Tier[] memory tiers) {
+        tiers = new Tier[](subjects.length);
+        for (uint256 i = 0; i < subjects.length; i++) {
+            tiers[i] = _tierOf(
+                _score(
+                    _subjectAttestations[subjects[i]],
+                    Category.Overall,
+                    false
+                )
+            );
+        }
+    }
+
     /// @notice Every subject currently sitting in one tier, in first-seen
     ///         order — the directory view behind "show me all Trusted
     ///         freelancers". `limit` is clamped to the matching set and a
