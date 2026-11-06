@@ -1436,6 +1436,46 @@ contract ReputationRegistry {
         emit Unpaused(msg.sender);
     }
 
+    /// @notice Start handing the registry to a new owner. Only the
+    ///         current owner may call this. Nothing changes yet: the
+    ///         new owner must call `acceptOwnership` themselves, so a
+    ///         typo cannot hand the registry to a dead address, and a
+    ///         transfer started in error can be cancelled before it
+    ///         lands. Starting a second transfer overwrites the first
+    ///         pending one. Works while paused — governance is not a
+    ///         reputation write.
+    function transferOwnership(address newOwner) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (newOwner == address(0)) revert ZeroAddress();
+        pendingOwner = newOwner;
+        emit OwnershipTransferInitiated(owner, newOwner);
+    }
+
+    /// @notice Accept a pending ownership transfer. Only the address
+    ///         named in `transferOwnership` may call this. The old
+    ///         owner loses every admin right the moment this lands:
+    ///         verify, strike, pause, proof issuance, and starting the
+    ///         next transfer all move to the new owner.
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        address previousOwner = owner;
+        owner = pendingOwner;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(previousOwner, owner);
+    }
+
+    /// @notice Cancel a pending ownership transfer. Only the current
+    ///         owner may call this. The pending address loses the
+    ///         right to accept, and the current owner keeps the
+    ///         registry.
+    function cancelOwnershipTransfer() external {
+        if (msg.sender != owner) revert NotOwner();
+        if (pendingOwner == address(0)) revert NoPendingTransfer();
+        address cancelled = pendingOwner;
+        pendingOwner = address(0);
+        emit OwnershipTransferCancelled(owner, cancelled);
+    }
+
     /// @notice When an attestation stops counting toward scores: its
     ///         last update plus the current expiry duration. Returns 0
     ///         while expiry is disabled, so callers can tell "never
