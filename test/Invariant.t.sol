@@ -8,6 +8,9 @@ import {ReputationRegistry} from "../src/ReputationRegistry.sol";
 ///         dispute / resolve / expire cycles plus time warps, with
 ///         owner strikes and strike-clearing mixed in, and pauses /
 ///         unpauses so the fuzz runs exercise the frozen state too.
+///         Attestations are sometimes routed through an active
+///         delegate (set / revoked by the handler), so the delegate
+///         paths get the same lifecycle coverage as direct attests.
 /// @dev Every action is guarded to the state it is legal in, so a revert
 ///      can never mask a broken invariant: if the handler calls the
 ///      contract, the call is expected to succeed. Actions that are not
@@ -49,6 +52,11 @@ contract ReputationHandler is Test {
     // the moment of pausing for the frozen-count invariant.
     bool public paused;
     uint256 public pausedAtCount;
+    // Delegation mirror: expiry per (attester, delegate) pair, 0 when
+    // never set or revoked. attest() routes through an active delegate
+    // when one exists, so the mirror must track exactly what the
+    // registry stores.
+    mapping(address => mapping(address => uint256)) public delegateExpiry;
 
     constructor(address[] memory _actors) {
         registry = new ReputationRegistry();
@@ -79,8 +87,32 @@ contract ReputationHandler is Test {
         bytes32 key = _key(attester, subject, category);
         uint256 existing = activeByKey[key];
         if (existing != 0 && disputed[existing - 1]) return; // must resolve first
-        vm.prank(attester);
-        uint256 id = registry.attest(subject, category, score, bytes32(seed));
+        // Route about half the attestations through an active delegate
+        // when the attester has one: the record is identical (same
+        // attester, same weight), only the caller differs.
+        address delegate;
+        for (uint256 i = 0; i < actors.length; i++) {
+            address cand = actors[i];
+            if (cand == attester) continue;
+            if (delegateExpiry[attester][cand] > block.timestamp) {
+                delegate = cand;
+                break;
+            }
+        }
+        uint256 id;
+        if (delegate != address(0) && seed % 2 == 0) {
+            vm.prank(delegate);
+            id = registry.attestOnBehalf(
+                attester,
+                subject,
+                category,
+                score,
+                bytes32(seed)
+            );
+        } else {
+            vm.prank(attester);
+            id = registry.attest(subject, category, score, bytes32(seed));
+        }
         _touch(subject, category);
         if (existing == 0) {
             recordAttester[id] = attester;
@@ -192,6 +224,29 @@ contract ReputationHandler is Test {
         if (strikes[attester] == 0) return;
         registry.clearStrikes(attester);
         strikes[attester] = 0;
+    }
+
+    /// @notice Authorize one actor as another's delegate for 1-31
+    ///         days, mirrored so the delegate invariant can check it.
+    function setDelegate(uint256 seed) external {
+        address attester = actors[seed % actors.length];
+        address delegate = actors[(seed / actors.length + 1) % actors.length];
+        if (delegate == attester) return;
+        uint256 expiry = block.timestamp + (seed % 30 days) + 1 days;
+        vm.prank(attester);
+        registry.setDelegate(delegate, expiry);
+        delegateExpiry[attester][delegate] = expiry;
+    }
+
+    /// @notice Revoke a delegation, mirrored. No-op on the mirror
+    ///         when nothing was set (the contract call is idempotent).
+    function revokeDelegate(uint256 seed) external {
+        address attester = actors[seed % actors.length];
+        address delegate = actors[(seed / actors.length + 1) % actors.length];
+        if (delegate == attester) return;
+        vm.prank(attester);
+        registry.revokeDelegate(delegate);
+        delegateExpiry[attester][delegate] = 0;
     }
 
     /// @notice Pause the registry and freeze the attestation count for
@@ -419,5 +474,28 @@ contract ReputationInvariants is Test {
         if (!handler.paused()) return;
         assertTrue(registry.paused());
         assertEq(registry.attestationCount(), handler.pausedAtCount());
+    }
+
+    /// @notice The handler's delegation mirror matches the registry
+    ///         exactly — expiry per (attester, delegate) pair — and
+    ///         `isDelegate` is true exactly while the mirrored expiry
+    ///         is still in the future. Warps age the mirror the same
+    ///         way they age the registry, because both compare the
+    ///         stored expiry against the current time.
+    function invariant_delegate_mirror_matches() public view {
+        for (uint256 i = 0; i < actors.length; i++) {
+            for (uint256 j = 0; j < actors.length; j++) {
+                if (i == j) continue;
+                uint256 expiry = handler.delegateExpiry(actors[i], actors[j]);
+                assertEq(
+                    registry.delegateExpiry(actors[i], actors[j]),
+                    expiry
+                );
+                assertEq(
+                    registry.isDelegate(actors[i], actors[j]),
+                    expiry > block.timestamp
+                );
+            }
+        }
     }
 }

@@ -62,6 +62,16 @@ pragma solidity 0.8.24;
 ///      accepts), so a lost or mistyped owner key cannot lock the
 ///      registry forever, and a transfer to the wrong address can be
 ///      cancelled before it is accepted.
+///      An attester may also delegate: they can authorize another
+///      address (for example a platform's operations wallet) to
+///      attest on their behalf until an expiry they choose. The
+///      delegate's submissions carry the attester's identity and
+///      snapshot weight — the delegate's own reputation never
+///      matters — and the same guards apply (suspension, pause,
+///      self-attestation, score range, disputed records). Sensitive
+///      actions stay with the attester: only they may revoke an
+///      attestation or resolve a dispute, and a delegate's authority
+///      can be revoked at any time or simply lapses at its expiry.
 contract ReputationRegistry {
     enum Category {
         Overall,
@@ -192,6 +202,8 @@ contract ReputationRegistry {
     error AttesterSuspended();
     error InvalidProofValidity();
     error NoScoreProof();
+    error NotDelegate();
+    error InvalidDelegate();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -263,6 +275,15 @@ contract ReputationRegistry {
         address indexed previousOwner,
         address indexed newOwner
     );
+    event DelegateSet(
+        address indexed attester,
+        address indexed delegate,
+        uint256 expiresAt
+    );
+    event DelegateRevoked(
+        address indexed attester,
+        address indexed delegate
+    );
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
@@ -327,6 +348,13 @@ contract ReputationRegistry {
     /// @notice Verified attesters, set by the owner (see
     ///         `setVerifiedAttester`).
     mapping(address => bool) private _verifiedAttesters;
+
+    /// @notice Delegates per attester: when an authorized delegate's
+    ///         authority lapses (see `setDelegate`). `_delegateList`
+    ///         tracks every address ever authorized, in first-set
+    ///         order, so `getDelegates` can enumerate them.
+    mapping(address => mapping(address => uint256)) private _delegateExpiry;
+    mapping(address => address[]) private _delegateList;
 
     /// @notice Strikes per attester, set by the owner (see
     ///         `strikeAttester`). Three strikes suspends the attester.
@@ -407,18 +435,39 @@ contract ReputationRegistry {
     /// @notice Attach or replace the evidence hash on one of your own
     ///         attestations — for evidence that only exists after the
     ///         work is delivered, or to correct a hash attached in error.
-    ///         Only the attester may do this, and only while the record is
-    ///         active: a revoked attestation is a frozen audit record.
-    ///         Evidence is metadata only; changing it never touches the
-    ///         score, the decay clock, or the score history.
+    ///         Only the attester (or their active delegate, via
+    ///         `setEvidenceOnBehalf`) may do this, and only while the
+    ///         record is active: a revoked attestation is a frozen
+    ///         audit record. Evidence is metadata only; changing it
+    ///         never touches the score, the decay clock, or the score
+    ///         history.
     function setEvidence(uint256 id, bytes32 evidenceHash) external {
+        _setEvidence(msg.sender, id, evidenceHash);
+    }
+
+    /// @notice `setEvidence` on behalf of `attester`: the delegate
+    ///         check runs first, then the same rules as `setEvidence`.
+    function setEvidenceOnBehalf(
+        address attester,
+        uint256 id,
+        bytes32 evidenceHash
+    ) external {
+        if (!isDelegate(attester, msg.sender)) revert NotDelegate();
+        _setEvidence(attester, id, evidenceHash);
+    }
+
+    function _setEvidence(
+        address attester,
+        uint256 id,
+        bytes32 evidenceHash
+    ) internal {
         if (paused) revert RegistryPaused();
         if (id >= _attestations.length) revert UnknownAttestation();
         Attestation storage a = _attestations[id];
-        if (a.attester != msg.sender) revert NotAttester();
+        if (a.attester != attester) revert NotAttester();
         if (a.revoked) revert AlreadyRevoked();
         a.evidenceHash = evidenceHash;
-        emit EvidenceUpdated(id, msg.sender, a.subject, evidenceHash);
+        emit EvidenceUpdated(id, attester, a.subject, evidenceHash);
     }
 
     /// @notice Attest many subjects/categories in one transaction — the
@@ -454,6 +503,164 @@ contract ReputationRegistry {
         for (uint256 i = 0; i < inputs.length; i++) {
             ids[i] = _attest(
                 msg.sender,
+                inputs[i].subject,
+                inputs[i].category,
+                inputs[i].score,
+                inputs[i].commentHash,
+                inputs[i].evidenceHash,
+                true
+            );
+        }
+    }
+
+    /// @notice Authorize `delegate` to attest on your behalf until
+    ///         `expiresAt` (a unix timestamp, must be in the future).
+    ///         The delegate's submissions are recorded as yours: the
+    ///         attestation's attester is you, and its snapshot weight
+    ///         comes from your reputation, not the delegate's. Re-set
+    ///         to extend (or shorten) the expiry; revoke any time
+    ///         with `revokeDelegate`. A delegate may attest, re-attest,
+    ///         batch-attest, and attach evidence — but never revoke an
+    ///         attestation or resolve a dispute: those stay yours.
+    function setDelegate(address delegate, uint256 expiresAt) external {
+        if (delegate == address(0)) revert ZeroAddress();
+        if (delegate == msg.sender) revert InvalidDelegate();
+        if (expiresAt <= block.timestamp) revert InvalidDelegate();
+        if (_delegateExpiry[msg.sender][delegate] == 0) {
+            _delegateList[msg.sender].push(delegate);
+        }
+        _delegateExpiry[msg.sender][delegate] = expiresAt;
+        emit DelegateSet(msg.sender, delegate, expiresAt);
+    }
+
+    /// @notice Revoke a delegate's authority immediately. Idempotent:
+    ///         revoking an address that holds no authority is a no-op
+    ///         (the event still records the intent).
+    function revokeDelegate(address delegate) external {
+        _delegateExpiry[msg.sender][delegate] = 0;
+        emit DelegateRevoked(msg.sender, delegate);
+    }
+
+    /// @notice Whether `delegate` may currently attest for `attester`:
+    ///         authorized and not yet expired.
+    function isDelegate(
+        address attester,
+        address delegate
+    ) public view returns (bool) {
+        return _delegateExpiry[attester][delegate] > block.timestamp;
+    }
+
+    /// @notice When `delegate`'s authority for `attester` lapses
+    ///         (0 when never authorized or revoked).
+    function delegateExpiry(
+        address attester,
+        address delegate
+    ) external view returns (uint256) {
+        return _delegateExpiry[attester][delegate];
+    }
+
+    /// @notice The attester's currently active delegates, in the order
+    ///         they were first authorized. Expired and revoked entries
+    ///         are omitted.
+    function getDelegates(
+        address attester
+    ) external view returns (address[] memory delegates) {
+        address[] storage list = _delegateList[attester];
+        uint256 active;
+        for (uint256 i = 0; i < list.length; i++) {
+            if (_delegateExpiry[attester][list[i]] > block.timestamp) {
+                active++;
+            }
+        }
+        delegates = new address[](active);
+        uint256 j;
+        for (uint256 i = 0; i < list.length; i++) {
+            if (_delegateExpiry[attester][list[i]] > block.timestamp) {
+                delegates[j++] = list[i];
+            }
+        }
+    }
+
+    /// @notice Attest on behalf of `attester` — only an active delegate
+    ///         may call this, and the record is the attester's in every
+    ///         way (attester field, snapshot weight, dispute ownership).
+    ///         All of `_attest`'s guards still apply to the attester:
+    ///         suspension, pause, self-attestation, score range, and
+    ///         disputed records.
+    function attestOnBehalf(
+        address attester,
+        address subject,
+        Category category,
+        uint8 score,
+        bytes32 commentHash
+    ) external returns (uint256 id) {
+        if (!isDelegate(attester, msg.sender)) revert NotDelegate();
+        return
+            _attest(
+                attester,
+                subject,
+                category,
+                score,
+                commentHash,
+                bytes32(0),
+                false
+            );
+    }
+
+    /// @notice `attestWithEvidence` on behalf of `attester`: same
+    ///         delegate check, same evidence semantics.
+    function attestWithEvidenceOnBehalf(
+        address attester,
+        address subject,
+        Category category,
+        uint8 score,
+        bytes32 commentHash,
+        bytes32 evidenceHash
+    ) external returns (uint256 id) {
+        if (!isDelegate(attester, msg.sender)) revert NotDelegate();
+        return
+            _attest(
+                attester,
+                subject,
+                category,
+                score,
+                commentHash,
+                evidenceHash,
+                true
+            );
+    }
+
+    /// @notice `attestBatch` on behalf of `attester`: one delegate
+    ///         check up front, then the same atomic batch semantics.
+    function attestBatchOnBehalf(
+        address attester,
+        AttestInput[] calldata inputs
+    ) external returns (uint256[] memory ids) {
+        if (!isDelegate(attester, msg.sender)) revert NotDelegate();
+        ids = new uint256[](inputs.length);
+        for (uint256 i = 0; i < inputs.length; i++) {
+            ids[i] = _attest(
+                attester,
+                inputs[i].subject,
+                inputs[i].category,
+                inputs[i].score,
+                inputs[i].commentHash,
+                bytes32(0),
+                false
+            );
+        }
+    }
+
+    /// @notice `attestBatchWithEvidence` on behalf of `attester`.
+    function attestBatchWithEvidenceOnBehalf(
+        address attester,
+        AttestWithEvidenceInput[] calldata inputs
+    ) external returns (uint256[] memory ids) {
+        if (!isDelegate(attester, msg.sender)) revert NotDelegate();
+        ids = new uint256[](inputs.length);
+        for (uint256 i = 0; i < inputs.length; i++) {
+            ids[i] = _attest(
+                attester,
                 inputs[i].subject,
                 inputs[i].category,
                 inputs[i].score,

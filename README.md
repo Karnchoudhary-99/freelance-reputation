@@ -24,6 +24,7 @@ that travel with the worker, not the platform.
 - [x] Attester strikes & suspension (owner-managed strikes, -1 weight each, 3 strikes suspends)
 - [x] Score proofs (owner-issued portable certificates, on-chain verification, 90-day max validity)
 - [x] Governance & safety (emergency pause, two-step ownership transfer)
+- [x] Attester delegation (expiry-bounded delegates attest on your behalf)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -411,6 +412,41 @@ registry outgrows its deployer.
   overwrites the first. Transfers work while paused, so a compromised
   owner key can be rotated out from under a freeze.
 
+### Attester delegation
+
+A client does not have to sign every attestation themselves: they can
+authorize a delegate — a platform's operations wallet, an assistant,
+a DAO's review committee — to attest on their behalf.
+
+- `setDelegate(delegate, expiresAt)` — the attester picks a delegate
+  and an expiry (a unix timestamp, must be in the future). Re-setting
+  extends or shortens the authority; `revokeDelegate(delegate)` ends
+  it immediately. Self-delegation, the zero address, and a past expiry
+  all revert. `isDelegate(attester, delegate)`,
+  `delegateExpiry(attester, delegate)`, and `getDelegates(attester)`
+  (active delegates only, in first-authorized order) expose the state.
+- **On-behalf entry points.** `attestOnBehalf`,
+  `attestWithEvidenceOnBehalf`, `attestBatchOnBehalf`,
+  `attestBatchWithEvidenceOnBehalf`, and `setEvidenceOnBehalf` —
+  each checks the delegate first (`NotDelegate` otherwise), then runs
+  exactly the same logic as the direct call. The record is the
+  attester's in every way: attester field, snapshot weight from the
+  attester's reputation (the delegate's own reputation never matters),
+  dispute ownership. A delegate's re-attest updates the attester's
+  existing record, like a direct re-attest.
+- **What a delegate cannot do.** Revoking an attestation and resolving
+  a dispute stay with the attester — those are the sensitive actions,
+  and a delegate must not be able to erase or settle the attester's
+  record. And the usual guards still apply to the attester: a
+  suspended attester's delegate cannot attest, a paused registry
+  blocks delegate writes, and self-attestation through a delegate
+  still reverts.
+- **Signed attestations already cover relayers** — anyone may submit
+  an attestation the attester signed off-chain. Delegation is the
+  complement for the case where the attester does not want to sign
+  each attestation at all: authorize once, and the delegate submits
+  directly until the expiry lapses.
+
 ### Example flow
 
 ```text
@@ -426,8 +462,10 @@ alice score = (60*3 + 90*1) / 4 = 67.50
 `test/Invariant.t.sol` drives the registry through attest / revoke /
 dispute / resolve / expire cycles plus time warps (crossing the 90-day
 and 365-day decay tiers and the 30-day dispute window) and owner strikes
-/ strike-clearing, plus pause / unpause cycles, with a guarded handler, so every handler call is
-expected to succeed and a revert can never mask a broken invariant. Nine
+/ strike-clearing, plus pause / unpause cycles and delegate set / revoke
+cycles (about half the attestations are routed through an active
+delegate when the attester has one), with a guarded handler, so every handler call is
+expected to succeed and a revert can never mask a broken invariant. Ten
 invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
@@ -437,15 +475,17 @@ latest score-history snapshot matching the live score whenever no
 time has passed since the last change touching that scope (a warp ages
 every attestation, so snapshots drift from live scores by design after
 one), the strike mirror matching the registry with `attesterWeight`
-0 exactly while suspended and 1–3 otherwise, and the attestation count
-staying frozen while the registry is paused. Baseline: 9 invariants × 256 runs × depth 100 — 25,600 handler calls
+0 exactly while suspended and 1–3 otherwise, the attestation count
+staying frozen while the registry is paused, and the delegation mirror
+matching the registry with `isDelegate` true exactly while the mirrored
+expiry is still in the future. Baseline: 10 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 4,898,649 gas, 22,282 bytes runtime).
+per-function gas (deploy 5,372,020 gas, 24,793 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 196 tests (187 unit + 9 invariants)
+forge test          # 220 tests (210 unit + 10 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 

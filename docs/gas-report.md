@@ -6,7 +6,7 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/Evidence.t.sol`, `test/VerifiedAttesters.t.sol`,
 `test/AttestationExpiry.t.sol`, `test/CategoryReads.t.sol`, and
 `test/AttesterStrikes.t.sol`, `test/ScoreProofs.t.sol`,
-`test/Governance.t.sol`.
+`test/Governance.t.sol`, `test/Delegation.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -15,8 +15,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 4,898,649 gas |
-| Runtime size | 22,282 bytes |
+| Deployment cost | 5,372,020 gas |
+| Runtime size | 24,793 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -94,6 +94,22 @@ costs only the 21k-gas base plus the checks, since `_attest` reverts
 before any state change (and a signed attestation reverts before its
 nonce is consumed, because the whole transaction rolls back).
 
+Attester delegation added ~473k gas to deployment (+2,511 bytes):
+the `_delegateExpiry` / `_delegateList` mappings, the five
+on-behalf entry points, and the delegate views. The size jump is
+larger than the last few features because five new external
+functions each carry a full attestation path (the on-behalf
+functions delegate to `_attest`, so they duplicate its call frame
+rather than sharing it). `setDelegate` is a first-set cold write
+plus a list push (~91k gas max, ~22k when re-setting an existing
+delegate); `revokeDelegate` is a single-slot reset (~26k gas avg).
+`attestOnBehalf` costs the same as a direct `attest` on the same
+path (~217k gas avg in the delegation suite, 25k on a re-attest)
+plus one SLOAD for the delegate check —
+the delegation itself is nearly free at call time. The views are
+cheap reads: `isDelegate` ~2.8k gas, `getDelegates` ~11.5k gas
+avg (it scans the attester's delegate list twice).
+
 Attester strikes & suspension added ~187k gas to deployment
 (+1,208 bytes): the `_strikes` mapping, `strikeAttester` /
 `clearStrikes` / `strikes` / `isSuspended` plus two events, the
@@ -113,6 +129,16 @@ blocked call costs only the 21k-gas base plus the checks.
 | Function | Min | Avg | Median | Max | Calls |
 | --- | --- | --- | --- | --- | --- |
 | `attest` | 22,339 | 373,236 | 388,692 | 523,600 | 143 |
+| `attestOnBehalf` | 25,322 | 216,962 | 159,408 | 437,370 | 11 |
+| `attestWithEvidenceOnBehalf` | 433,590 | 433,590 | 433,590 | 433,590 | 1 |
+| `attestBatchOnBehalf` | 998,860 | 998,860 | 998,860 | 998,860 | 1 |
+| `attestBatchWithEvidenceOnBehalf` | 435,065 | 435,065 | 435,065 | 435,065 | 1 |
+| `setEvidenceOnBehalf` | 42,639 | 42,639 | 42,639 | 42,639 | 1 |
+| `setDelegate` | 21,843 | 78,383 | 90,766 | 90,766 | 23 |
+| `revokeDelegate` | 23,741 | 24,741 | 24,741 | 25,741 | 4 |
+| `isDelegate` (view) | 2,814 | 2,814 | 2,814 | 2,814 | 5 |
+| `getDelegates` (view) | 8,619 | 11,470 | 9,315 | 15,478 | 7 |
+| `delegateExpiry` (view) | 2,790 | 2,790 | 2,790 | 2,790 | 3 |
 | `attestWithEvidence` | 247,078 | 485,689 | 543,994 | 543,994 | 10 |
 | `attestBatchWithEvidence` | 547,375 | 749,345 | 749,345 | 951,315 | 2 |
 | `setEvidence` | 24,256 | 38,713 | 33,399 | 55,154 | 8 |
