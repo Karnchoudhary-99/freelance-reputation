@@ -480,12 +480,12 @@ staying frozen while the registry is paused, and the delegation mirror
 matching the registry with `isDelegate` true exactly while the mirrored
 expiry is still in the future. Baseline: 10 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 4,898,649 gas, 22,282 bytes runtime).
+per-function gas (deploy 5,372,020 gas, 24,793 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 196 tests (187 unit + 9 invariants)
+forge test          # 220 tests (210 unit + 10 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 
