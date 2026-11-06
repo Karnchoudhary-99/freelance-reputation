@@ -408,4 +408,16 @@ contract ReputationInvariants is Test {
             }
         }
     }
+
+    /// @notice While the registry is paused, no attestation can be
+    ///         created or updated, so the attestation count must stay
+    ///         exactly where it was when the pause landed. Revokes
+    ///         do not change the count (records stay on-chain), and
+    ///         the handler never attests while paused, so any drift
+    ///         means the pause guard leaked a write.
+    function invariant_attestation_count_frozen_while_paused() public view {
+        if (!handler.paused()) return;
+        assertTrue(registry.paused());
+        assertEq(registry.attestationCount(), handler.pausedAtCount());
+    }
 }
