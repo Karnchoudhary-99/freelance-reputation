@@ -72,6 +72,18 @@ truncating to zero. Re-attesting refreshes the clock, and attester weights
 are read from the same decayed average — a formerly well-rated attester
 whose endorsements all aged out counts as a newcomer again.
 
+The schedule is configurable: `setDecayPeriods(fullPeriod,
+halfPeriod)` — owner-only — retunes the two cutoffs for a registry
+whose work cycles are shorter or longer than a year. `decayFullPeriod`
+and `decayHalfPeriod` report the current values (defaults 90 and 365
+days); `decayFactorBpsAt(timestamp, when)` reads the configured
+periods, so the score-preview views follow a retune too. Bounds: the
+full period must be at least 1 day, the half period longer than the
+full period and at most 10 years. A retune re-weights every existing
+record from its own last update — shortening the full period can drop
+live scores immediately, lengthening it can revive decayed weight —
+but no record is ever rewritten.
+
 ### Attestation expiry
 
 Decay fades an old endorsement to a quarter of its weight; expiry finishes
