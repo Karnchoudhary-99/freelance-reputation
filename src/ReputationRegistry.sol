@@ -51,6 +51,17 @@ pragma solidity 0.8.24;
 ///      it is frozen at issuance, the live score moving afterwards
 ///      does not invalidate it until it expires (at most 90 days)
 ///      or the owner revokes it.
+///      Governance and safety: the owner may pause the registry in an
+///      emergency (a bug, a spam wave, a compromised relayer). While
+///      paused, no new attestation can be created or updated and no
+///      evidence or score proof can be issued — but safety exits stay
+///      open: attestations can still be revoked and disputes can
+///      still be raised, resolved, and expired, so a pause can never
+///      trap a subject under a bad attestation. Ownership itself is
+///      transferable in two steps (initiate, then the new owner
+///      accepts), so a lost or mistyped owner key cannot lock the
+///      registry forever, and a transfer to the wrong address can be
+///      cancelled before it is accepted.
 contract ReputationRegistry {
     enum Category {
         Overall,
@@ -173,6 +184,10 @@ contract ReputationRegistry {
     error ExpiredSignature();
     error InvalidSignature();
     error NotOwner();
+    error RegistryPaused();
+    error RegistryNotPaused();
+    error NotPendingOwner();
+    error NoPendingTransfer();
     error AttestationExpired();
     error AttesterSuspended();
     error InvalidProofValidity();
@@ -234,6 +249,20 @@ contract ReputationRegistry {
         uint64 expiresAt
     );
     event ScoreProofRevoked(address indexed subject);
+    event Paused(address indexed by);
+    event Unpaused(address indexed by);
+    event OwnershipTransferInitiated(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+    event OwnershipTransferCancelled(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
@@ -277,9 +306,23 @@ contract ReputationRegistry {
     /// @notice EIP-712 domain separator, fixed at deploy time.
     bytes32 public immutable DOMAIN_SEPARATOR;
 
-    /// @notice The deployer: the only account that may manage the
-    ///         verified-attester registry.
-    address public immutable owner;
+    /// @notice The registry owner: the only account that may manage
+    ///         the verified-attester registry, strike attesters, issue
+    ///         score proofs, pause the registry, and start an ownership
+    ///         transfer. Set to the deployer at construction; see
+    ///         `transferOwnership` for how it changes hands.
+    address public owner;
+
+    /// @notice The address that may accept a pending ownership
+    ///         transfer (see `transferOwnership`). Zero when no
+    ///         transfer is in flight.
+    address public pendingOwner;
+
+    /// @notice Whether the registry is paused: while true, no new
+    ///         attestation can be created or updated and no evidence
+    ///         or score proof can be issued. Revokes and dispute
+    ///         actions stay available (see `pause`).
+    bool public paused;
 
     /// @notice Verified attesters, set by the owner (see
     ///         `setVerifiedAttester`).
@@ -538,6 +581,7 @@ contract ReputationRegistry {
         bytes32 evidenceHash,
         bool replaceEvidence
     ) internal returns (uint256 id) {
+        if (paused) revert RegistryPaused();
         if (subject == address(0)) revert ZeroAddress();
         if (subject == attester) revert SelfAttestation();
         if (score > MAX_SCORE) revert InvalidScore();
@@ -1358,6 +1402,36 @@ contract ReputationRegistry {
         if (msg.sender != owner) revert NotOwner();
         expiryDuration = duration;
         emit ExpiryDurationUpdated(duration);
+    }
+
+    /// @notice Freeze the registry in an emergency: a bug, a spam
+    ///         wave, a compromised relayer. Only the owner may call
+    ///         this. While paused, no attestation can be created or
+    ///         updated (direct, batch, or signed) and no evidence or
+    ///         score proof can be issued. Deliberately NOT blocked:
+    ///         revoking an attestation, and raising, resolving, or
+    ///         expiring a dispute — a pause must never trap a subject
+    ///         under a bad attestation, and the owner's own admin
+    ///         controls (verify, strike, expiry) keep working so the
+    ///         problem that caused the pause can be fixed while it
+    ///         is in force. Scores, tiers, leaderboards, and all reads
+    ///         keep working: pausing freezes writes, not the registry.
+    function pause() external {
+        if (msg.sender != owner) revert NotOwner();
+        if (paused) revert RegistryPaused();
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    /// @notice Unfreeze the registry after a pause. Only the owner
+    ///         may call this. Attestations pick up exactly where they
+    ///         left off — a pause never rewrites records, scores, or
+    ///         the decay clock.
+    function unpause() external {
+        if (msg.sender != owner) revert NotOwner();
+        if (!paused) revert RegistryNotPaused();
+        paused = false;
+        emit Unpaused(msg.sender);
     }
 
     /// @notice When an attestation stops counting toward scores: its
