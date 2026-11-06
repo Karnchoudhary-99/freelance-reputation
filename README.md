@@ -22,6 +22,7 @@ that travel with the worker, not the platform.
 - [x] Attestation expiry (730-day default, owner-configurable, re-attest revives)
 - [x] Category reads + latest snapshot (paginated per-category attestations, one-call latest snapshot)
 - [x] Attester strikes & suspension (owner-managed strikes, -1 weight each, 3 strikes suspends)
+- [x] Score proofs (owner-issued portable certificates, on-chain verification, 90-day max validity)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -350,6 +351,37 @@ Two read helpers for frontends that already know which slice they want:
   expiry move the live score; the snapshot reports the score as it
   stood after the last change).
 
+### Score proofs
+
+A freelancer's live score is easy to read on-chain — but a screenshot of
+it is easy to fake. A score proof is the registry's own certificate: the
+owner issues one for a subject and any third party (a hiring platform, a
+client checking a proposal) can verify the presented proof against the
+registry instead of trusting the freelancer's word.
+
+- `issueScoreProof(subject, validFor)` — owner only. Freezes the
+  subject's live overall score, tier, and active-attestation count as
+  they stand at issuance, valid for `validFor` (more than 0, at most
+  `MAX_PROOF_VALIDITY` = 90 days, so a stale reputation cannot be
+  presented as current forever). Re-issuing replaces the previous proof.
+  A subject with no attestations gets a valid proof of average 0 /
+  tier Unranked / count 0 — "no reputation yet" is itself a checkable
+  claim.
+- `scoreProofOf(subject)` — the latest issued proof plus an `exists`
+  flag (`false` when never issued, or after a revocation). An expired
+  proof is still returned; check `expiresAt`, or use the verifier.
+- `verifyScoreProof(proof)` — `true` exactly when the proof matches the
+  latest proof issued for its subject, field for field, and has not
+  expired. A tampered average, tier, count, or timestamp fails, as does
+  a proof for a subject who never received one. The check is against
+  the frozen proof, not the live score: a freelancer's reputation
+  moving after issuance does not invalidate the certificate until it
+  expires.
+- `revokeScoreProof(subject)` — owner only, for a certificate issued in
+  error or after fraud is discovered. Only the certificate is
+  withdrawn; the subject keeps their attestations and live score, and a
+  new proof may be issued afterwards.
+
 ### Example flow
 
 ```text
@@ -378,7 +410,7 @@ every attestation, so snapshots drift from live scores by design after
 one), and the strike mirror matching the registry with `attesterWeight`
 0 exactly while suspended and 1–3 otherwise. Baseline: 8 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 4,278,345 gas, 19,746 bytes runtime).
+per-function gas (deploy 4,688,594 gas, 21,659 bytes runtime).
 
 ### Run it
 
