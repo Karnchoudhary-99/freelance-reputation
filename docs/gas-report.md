@@ -6,8 +6,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/Evidence.t.sol`, `test/VerifiedAttesters.t.sol`,
 `test/AttestationExpiry.t.sol`, `test/CategoryReads.t.sol`, and
 `test/AttesterStrikes.t.sol`, `test/ScoreProofs.t.sol`,
-`test/Governance.t.sol`, `test/Delegation.t.sol`, and
-`test/DisputeEscalation.t.sol`.
+`test/Governance.t.sol`, `test/Delegation.t.sol`,
+`test/DisputeEscalation.t.sol`, and `test/BatchReads.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -16,8 +16,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 5,625,713 gas |
-| Runtime size | 25,966 bytes |
+| Deployment cost | 5,900,469 gas |
+| Runtime size | 26,913 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -138,6 +138,17 @@ the active key, so the two paths bracket the average). Escalation
 itself records no snapshot and touches no score, which is why it
 stays cheap; the owner-arbitration cost is paid only when a dispute
 actually reaches arbitration.
+
+Batch reads added ~275k gas to deployment (+947 bytes): three pure
+view functions (`getScores`, `getProfiles`, `getTiers`) — no new
+storage, no writes, so write costs do not move at all. As views
+they are off-chain reads, but the test suite still measures them:
+on 4-subject inputs `getScores` averages ~34k gas and `getTiers`
+~34k (one score scan per subject), while `getProfiles` averages
+~64k (five scans per subject — overall plus one per category).
+Cost grows linearly with the input list and with each subject's
+attestation count, so frontends should keep batches small on a
+busy registry.
 
 ## Function costs (gas)
 
