@@ -143,6 +143,25 @@ A freelancer who believes an attestation is unfair can challenge it:
 - `getProfile(subject)` — overall plus all four category scores in a
   single call, so an integrating frontend needs one RPC call, not five.
 
+### Batch reads
+
+Rendering a list of freelancers should not cost one RPC call per row:
+
+- `getScores(subjects)` — overall `Score` for every subject in the
+  input, in input order. Unknown subjects (never attested) return a
+  zero `Score`, exactly like `getScore`.
+- `getProfiles(subjects)` — the full `Profile` (overall + all four
+  category scores) for every subject, in input order.
+- `getTiers(subjects)` — the `Tier` for every subject, in input order,
+  for rendering tier badges on a list. Unknown subjects return
+  `Unranked`, exactly like `tierOf`.
+
+All three return an empty array for an empty input, and they always
+agree with the single-subject views — the batch is a convenience, not
+a second source of truth. Like the leaderboards, these are views for
+off-chain `eth_call`: they scan every listed subject's attestations,
+so they grow linearly with the input list.
+
 ### Signed attestations (EIP-712)
 
 A freelancer's client may not want to hold gas or call the contract
