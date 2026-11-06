@@ -84,4 +84,64 @@ contract TopAttestersTest is Test {
         assertEq(top[2].attester, makeAddr("x"));
         assertEq(top[3].attester, makeAddr("y"));
     }
+
+    function testRevokedOnlyAttesterExcludedButCounted() public {
+        _attest(a1, alice, 100);
+        _attest(a2, bob, 80);
+        vm.prank(a1);
+        registry.revokeAttestation(0);
+        // a1 stays in the attester registry but drops off the board.
+        assertEq(registry.attesterCount(), 2);
+        ReputationRegistry.AttesterLeaderboardEntry[] memory top = registry.getTopAttesters(10);
+        assertEq(top.length, 1);
+        assertEq(top[0].attester, a2);
+        assertEq(top[0].count, 1);
+    }
+
+    function testDisputedAttestationDoesNotCount() public {
+        _attest(a1, alice, 100);
+        _attest(a1, bob, 90);
+        _attest(a2, carol, 80);
+        vm.prank(alice);
+        registry.disputeAttestation(0, bytes32("unfair"));
+        ReputationRegistry.AttesterLeaderboardEntry[] memory top = registry.getTopAttesters(10);
+        assertEq(top.length, 2);
+        // a1 drops to count 1 (bob only); a2 keeps count 1; tie on
+        // count breaks on own average — both 0, so first-seen: a1.
+        assertEq(top[0].attester, a1);
+        assertEq(top[0].count, 1);
+        assertEq(top[1].attester, a2);
+    }
+
+    function testExpiredAttestationDoesNotCount() public {
+        // The test contract deployed the registry, so it is the owner.
+        registry.setExpiryDuration(1 days);
+        _attest(a1, alice, 100);
+        _attest(a2, bob, 80);
+        vm.warp(block.timestamp + 2 days);
+        ReputationRegistry.AttesterLeaderboardEntry[] memory top = registry.getTopAttesters(10);
+        assertEq(top.length, 0);
+        assertEq(registry.attesterCount(), 2);
+    }
+
+    function testSuspendedAttesterStaysRankedWithWeightZero() public {
+        _attest(a1, alice, 100);
+        _attest(a1, bob, 90);
+        _attest(a2, carol, 80);
+        // The test contract is the owner: three strikes suspend a1.
+        registry.strikeAttester(a1);
+        registry.strikeAttester(a1);
+        registry.strikeAttester(a1);
+        assertTrue(registry.isSuspended(a1));
+
+        // Past records still count — suspension blocks new attestations
+        // only — but the weight shown is the current one: 0.
+        ReputationRegistry.AttesterLeaderboardEntry[] memory top = registry.getTopAttesters(10);
+        assertEq(top.length, 2);
+        assertEq(top[0].attester, a1);
+        assertEq(top[0].count, 2);
+        assertEq(top[0].weight, 0);
+        assertEq(top[1].attester, a2);
+        assertEq(top[1].count, 1);
+    }
 }
