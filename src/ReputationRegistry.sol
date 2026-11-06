@@ -1648,6 +1648,10 @@ contract ReputationRegistry {
         );
         uint256 rankedCount;
         for (uint256 i = 0; i < _subjects.length; i++) {
+            // Opted-out subjects never appear on a public board, even
+            // with active attestations — privacy is a listing rule,
+            // not a score rule.
+            if (_leaderboardOptOut[_subjects[i]]) continue;
             Score memory s = _score(
                 _subjectAttestations[_subjects[i]],
                 category,
