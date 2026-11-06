@@ -6,7 +6,8 @@ import {ReputationRegistry} from "../src/ReputationRegistry.sol";
 
 /// @notice Fuzz handler driving the registry through attest / revoke /
 ///         dispute / resolve / expire cycles plus time warps, with
-///         owner strikes and strike-clearing mixed in.
+///         owner strikes and strike-clearing mixed in, and pauses /
+///         unpauses so the fuzz runs exercise the frozen state too.
 /// @dev Every action is guarded to the state it is legal in, so a revert
 ///      can never mask a broken invariant: if the handler calls the
 ///      contract, the call is expected to succeed. Actions that are not
@@ -14,7 +15,7 @@ import {ReputationRegistry} from "../src/ReputationRegistry.sol";
 ///      registry's per-record flags because the contract exposes no
 ///      key-based lookup; every mutation goes through this handler, so
 ///      the mirror cannot drift. The handler deploys the registry, so
-///      it is the owner and may strike / clear strikes.
+///      it is the owner and may strike / clear strikes / pause.
 contract ReputationHandler is Test {
     ReputationRegistry public registry;
     address[] public actors;
@@ -43,6 +44,11 @@ contract ReputationHandler is Test {
     // Strikes per actor, mirrored so attest() never calls as a
     // suspended attester (that would revert and mask an invariant).
     mapping(address => uint256) public strikes;
+    // Pause mirror: attest() never calls while paused (that would
+    // revert), and pausedAtCount freezes the attestation count at
+    // the moment of pausing for the frozen-count invariant.
+    bool public paused;
+    uint256 public pausedAtCount;
 
     constructor(address[] memory _actors) {
         registry = new ReputationRegistry();
@@ -61,6 +67,8 @@ contract ReputationHandler is Test {
         address attester = actors[seed % actors.length];
         // A suspended attester cannot attest (or re-attest).
         if (strikes[attester] >= registry.MAX_STRIKES()) return;
+        // A paused registry accepts no new attestations.
+        if (paused) return;
         // Subject is always a different actor, so self-attestation never fires.
         address subject = actors[(seed / actors.length + 1) % actors.length];
         if (subject == attester) return;
@@ -184,6 +192,22 @@ contract ReputationHandler is Test {
         if (strikes[attester] == 0) return;
         registry.clearStrikes(attester);
         strikes[attester] = 0;
+    }
+
+    /// @notice Pause the registry and freeze the attestation count for
+    ///         the frozen-count invariant. No-op while already paused.
+    function pause() external {
+        if (paused) return;
+        registry.pause();
+        paused = true;
+        pausedAtCount = registry.attestationCount();
+    }
+
+    /// @notice Unpause the registry. No-op while not paused.
+    function unpause() external {
+        if (!paused) return;
+        registry.unpause();
+        paused = false;
     }
 }
 /// @notice Score-accounting invariants over the registry lifecycle.
