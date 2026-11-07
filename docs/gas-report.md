@@ -13,7 +13,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/AttesterRateLimit.t.sol`, and
 `test/DisputeBond.t.sol`, `test/CategoryWeights.t.sol`, and
 `test/DisputeAppeals.t.sol`, and `test/GovernanceWindows.t.sol`, and
-`test/VerifiedOnly.t.sol`, and `test/LeaderboardAt.t.sol`.
+`test/VerifiedOnly.t.sol`, and `test/LeaderboardAt.t.sol`, and
+`test/AttestationRequests.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -22,8 +23,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 8,462,572 gas |
-| Runtime size | 37,515 bytes |
+| Deployment cost | 9,508,020 gas |
+| Runtime size | 42,901 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -286,6 +287,29 @@ three-subject board, and the category preview ~186k gas, in line
 with the live category board's double scan. Same conclusion as the
 other boards: views for off-chain reads, not transaction inputs.
 
+Attestation requests added ~1,045k gas to deployment (+5,386
+bytes): the `AttestationRequest` struct and its three indexes
+(`_attestationRequests` array, per-subject / per-attester id lists,
+the one-open-per-ask key mapping), the request lifecycle
+(`requestAttestation` / `cancelAttestationRequest` /
+`fulfillAttestationRequest` + the with-evidence variant,
+`setRequestValidity`), the request reads (`attestationRequest`,
+`openRequestId`, `isRequestExpired`, the two paginated open-request
+views), and two extra fields on `Attestation` (`requestId`,
+`fromRequest`) plus the `_attest` → `_attestWithRequest` split that
+carries the link. A first request costs ~220k gas (cold storage:
+the request struct, two index pushes, and the key slot — in line
+with a first attestation); cancelling is a flag flip plus a key
+clear (~37k gas avg); fulfilling costs the attestation it files
+(~24k min when it updates an existing record, up to ~667k max when
+it creates a fresh one with snapshots, avg ~272k in the request
+suite). The request reads are views over the subject's / attester's
+id list, so they scale with that list's length, not with the
+registry — same off-chain-read conclusion as the other paginated
+views. The fuzz handler now drives request / fulfil / cancel cycles,
+and a 19th invariant mirrors the requests and checks that every
+fulfilled request links to a matching attestation.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -327,6 +351,17 @@ other boards: views for off-chain reads, not transaction inputs.
 | `setDisputeWindow` | 23,784 | 29,200 | 32,008 | 32,032 | 13 |
 | `setEscalationDelay` | 23,760 | 29,805 | 31,984 | 31,996 | 14 |
 | `setAppealWindow` | 23,764 | 28,200 | 29,846 | 29,858 | 11 |
+| `requestAttestation` | 24,166 | 191,911 | 214,898 | 220,498 | 36 |
+| `cancelAttestationRequest` | 23,766 | 31,804 | 32,786 | 36,902 | 8 |
+| `fulfillAttestationRequest` | 24,119 | 272,119 | 50,573 | 666,566 | 20 |
+| `fulfillAttestationRequestWithEvidence` | 551,934 | 551,934 | 551,934 | 551,934 | 1 |
+| `setRequestValidity` | 23,832 | 27,374 | 29,991 | 30,015 | 7 |
+| `attestationRequest` (view) | 14,342 | 14,342 | 14,342 | 14,342 | 6 |
+| `attestationRequestCount` (view) | 2,437 | 2,437 | 2,437 | 2,437 | 4 |
+| `openRequestId` (view) | 3,340 | 5,691 | 5,670 | 8,064 | 6 |
+| `isRequestExpired` (view) | 5,138 | 5,138 | 5,138 | 5,138 | 3 |
+| `getOpenRequestsForAttester` (view) | 9,919 | 35,097 | 37,862 | 56,412 | 6 |
+| `getOpenRequestsBySubject` (view) | 34,141 | 34,141 | 34,141 | 34,141 | 1 |
 | `disputeBondOf` (view) | 2,544 | 4,550 | 4,733 | 4,733 | 12 |
 | `isDisputeEscalated` (view) | 2,457 | 4,347 | 4,820 | 4,820 | 5 |
 | `getScore` (view) | 3,307 | 18,616 | 16,507 | 30,384 | 48 |
@@ -411,7 +446,7 @@ the page size, not with the subject's total history.
   allocation); `setEvidence` afterwards is a single-slot update
   (~39k gas). Evidence never triggers a snapshot or score
   recomputation, so it stays off the expensive paths.
-- **Invariant fuzz baseline:** 18 invariants × 256 runs × depth 100
+- **Invariant fuzz baseline:** 19 invariants × 256 runs × depth 100
   (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
   baseline; re-run `forge snapshot` after contract changes and diff it.
