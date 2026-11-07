@@ -2465,6 +2465,23 @@ contract ReputationRegistry {
         emit EscalationDelayUpdated(delay);
     }
 
+    /// @notice Retune the appeal window: how long a subject has to
+    ///         appeal an upheld dispute resolution. Only the owner may
+    ///         call this. The new window applies to every upheld
+    ///         resolution from its own `resolvedAt` — shortening it
+    ///         can close an open appeal window at once, lengthening
+    ///         it reopens one that had lapsed. Bounds: at least 1 day
+    ///         (a shorter window would give the subject no real chance
+    ///         to notice the outcome), at most 90 days.
+    function setAppealWindow(uint256 window) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (window < 1 days || window > 90 days) {
+            revert InvalidGovernanceWindow();
+        }
+        appealWindow = window;
+        emit AppealWindowUpdated(window);
+    }
+
     /// @notice Change the daily fresh-attestation limit per attester.
     ///         Only the owner may call this. The limit applies from
     ///         the moment it is set: lowering it can block an attester
