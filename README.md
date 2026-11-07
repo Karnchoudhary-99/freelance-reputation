@@ -29,6 +29,8 @@ that travel with the worker, not the platform.
 - [x] Milestone badges (RisingStar → Veteran, cumulative, decay-aware, batch reads)
 - [x] Attester daily rate limit (anti-spam cap, owner-configurable, re-attests free)
 - [x] Dispute bonds (opt-in ETH stake on disputes, attester keeps it on uphold, subject refunded otherwise)
+- [x] Category weights (owner-configurable per-category weights for the overall score)
+- [x] Dispute appeals (one appeal per upheld resolution, 7-day window, owner arbitrates)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -173,6 +175,36 @@ A freelancer who believes an attestation is unfair can challenge it:
   paused, like every other dispute exit.
 - While a dispute is open, the attester cannot quietly overwrite the
   record with a fresh `attest` call; revoking it settles the dispute.
+
+### Dispute appeals
+
+A dispute resolution is not the last word — the subject gets one appeal:
+
+- `appealDispute(id)` — only the subject, only once per dispute outcome,
+  and only within 7 days (`APPEAL_WINDOW`) of an upheld resolution.
+  The appeal re-excludes the attestation from every score until the
+  owner arbitrates it: an attester who "won" a dispute does not get
+  the score back while the subject's last word is pending. A conceded
+  or expired dispute has nothing to appeal — the record is already
+  revoked or reinstated — and an expired attestation cannot be appealed
+  either, since it counts toward no score. `appealDeadline(id)` reports
+  the last moment to appeal (0 when no appeal is available), and
+  `isAppealed(id)` reports whether one is open.
+- `resolveAppeal(id, uphold)` — only the registry owner, so neither
+  party judges their own case. Upholding re-confirms the attestation
+  (decay clock refreshed) and the record counts again; conceding
+  revokes it, freeing the subject to be re-attested later. Like a
+  dispute, appealing stakes the current dispute bond: it goes to the
+  attester when the appeal is upheld and back to the subject when the
+  owner concedes it. The appeal bond settles on the same
+  checks-effects-interactions + reentrancy-guard path as dispute
+  bonds, and the fuzz suite mirrors it in the outstanding-bond total.
+- A fresh dispute on the same record gets a fresh appeal right — the
+  one-appeal limit is per dispute outcome, not per record. While an
+  appeal is open the attester cannot overwrite the record with a
+  fresh `attest` call either; the score under arbitration is frozen
+  until the owner rules. Appeals and their arbitration stay open
+  while the registry is paused, like every other dispute exit.
 
 ### Dispute bonds
 
@@ -663,14 +695,15 @@ alice score = (60*3 + 90*1) / 4 = 67.50
 ### Invariant fuzz tests
 
 `test/Invariant.t.sol` drives the registry through attest / revoke /
-dispute / resolve / expire / escalate / owner-arbitrate cycles plus time warps (crossing the 90-day
+dispute / resolve / expire / escalate / owner-arbitrate / appeal /
+appeal-arbitrate cycles plus time warps (crossing the 90-day
 and 365-day decay tiers and the 30-day dispute window) and owner strikes
 / strike-clearing, plus pause / unpause cycles and delegate set / revoke
 cycles (about half the attestations are routed through an active
 delegate when the attester has one), plus owner category-weight retunes
 (biased toward the default 100 and toward 0, so the fuzz exercises both
 the equal blend and full exclusion), with a guarded handler, so every handler call is
-expected to succeed and a revert can never mask a broken invariant. Fifteen
+expected to succeed and a revert can never mask a broken invariant. Sixteen
 invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
@@ -692,15 +725,19 @@ which funds every actor and mirrors each posted bond), and the
 category-weight mirror matching the registry with every weight in the
 0–1000 range, and the overall average always lying between the lowest
 and highest active attestation score (a weighted mean can never leave
-that range, whatever the weights, decay, or snapshot weights do).
-Baseline: 15 invariants × 256 runs × depth 100 — 25,600 handler calls
+that range, whatever the weights, decay, or snapshot weights do), and
+the appeal mirror matching the registry with an appealed record always
+still active (not revoked, not disputed), an appeal usable exactly once
+per upheld resolution, and the appeal deadline agreeing with the stored
+resolution time.
+Baseline: 16 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 7,111,268 gas, 34,052 bytes runtime).
+per-function gas (deploy 8,128,507 gas, 36,806 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 324 tests (309 unit + 15 invariants)
+forge test          # 349 tests (333 unit + 16 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 

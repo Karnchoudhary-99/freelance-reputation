@@ -11,7 +11,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/LeaderboardOptOut.t.sol`, `test/TopAttesters.t.sol`,
 `test/DecayConfig.t.sol`, `test/ReputationBadges.t.sol`, and
 `test/AttesterRateLimit.t.sol`, and
-`test/DisputeBond.t.sol`, and `test/CategoryWeights.t.sol`.
+`test/DisputeBond.t.sol`, `test/CategoryWeights.t.sol`, and
+`test/DisputeAppeals.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -20,8 +21,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 7,111,268 gas |
-| Runtime size | 34,052 bytes |
+| Deployment cost | 8,128,507 gas |
+| Runtime size | 36,806 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -235,6 +236,20 @@ nothing extra either: its records are skipped before the decay
 multiplication, so a fully excluded category is cheaper to score
 than a weighted one.
 
+Dispute appeals added ~1,017k gas to deployment (+2,754 bytes): the
+three new `Attestation` fields (`appealed`, `resolvedAt`,
+`appealUsed` — one extra storage slot per record), the
+`APPEAL_WINDOW` constant, the `appealDispute` / `resolveAppeal`
+entry points plus the `isAppealed` / `appealDeadline` views and
+their events, and the appeal checks inside `_attest`,
+`disputeAttestation`, `_scoreAt`, `_activeAttestationCount`, and
+`attesterStats`. `appealDispute` averages ~109k gas (bond write
+plus snapshot) and `resolveAppeal` ~136k gas (snapshot plus bond
+settlement on the upheld path) in these tests; the cheap minima
+(~31k/~27k) are the revert cases. Every score read now pays one
+extra flag check per record, and every fresh attestation pays one
+extra cold-slot write.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -269,6 +284,8 @@ than a weighted one.
 | `expireDispute` | 31,178 | 99,045 | 147,112 | 156,410 | 9 |
 | `escalateDispute` | 23,700 | 35,265 | 37,722 | 37,722 | 25 |
 | `resolveDisputeAsOwner` | 26,987 | 96,670 | 118,473 | 156,634 | 14 |
+| `appealDispute` | 31,197 | 108,764 | 162,024 | 181,924 | 29 |
+| `resolveAppeal` | 27,032 | 136,462 | 162,381 | 172,157 | 15 |
 | `setDisputeBond` | 23,820 | 40,950 | 46,974 | 46,974 | 17 |
 | `disputeBondOf` (view) | 2,544 | 4,550 | 4,733 | 4,733 | 12 |
 | `isDisputeEscalated` (view) | 2,457 | 4,347 | 4,820 | 4,820 | 5 |
@@ -352,7 +369,7 @@ the page size, not with the subject's total history.
   allocation); `setEvidence` afterwards is a single-slot update
   (~39k gas). Evidence never triggers a snapshot or score
   recomputation, so it stays off the expensive paths.
-- **Invariant fuzz baseline:** 15 invariants × 256 runs × depth 100
+- **Invariant fuzz baseline:** 16 invariants × 256 runs × depth 100
   (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
   baseline; re-run `forge snapshot` after contract changes and diff it.
