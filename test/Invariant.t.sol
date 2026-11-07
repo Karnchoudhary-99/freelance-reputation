@@ -59,6 +59,13 @@ contract ReputationHandler is Test {
     // when one exists, so the mirror must track exactly what the
     // registry stores.
     mapping(address => mapping(address => uint256)) public delegateExpiry;
+    // Dispute-bond mirror: bond posted per record id, and the total
+    // outstanding. The handler funds disputes from the pranked
+    // subject's balance (a pranked call draws its value from the
+    // pranked address), so the invariant test deals each actor ETH
+    // and enables a bond in setUp.
+    mapping(uint256 => uint256) public bondOf;
+    uint256 public outstandingBonds;
 
     constructor(address[] memory _actors) {
         registry = new ReputationRegistry();
@@ -134,6 +141,8 @@ contract ReputationHandler is Test {
         registry.revokeAttestation(id);
         _touch(recordSubject[id], recordCategory[id]);
         revoked[id] = true;
+        // Revoking while disputed settles the dispute — and its bond.
+        if (disputed[id]) _settleBond(id);
         disputed[id] = false;
         escalated[id] = false;
         disputedAt[id] = 0;
@@ -147,11 +156,26 @@ contract ReputationHandler is Test {
         uint256 id = seed % created;
         if (revoked[id] || disputed[id]) return;
         if (_isExpired(id)) return; // expired records cannot be disputed
+        // The bond comes from the pranked subject's balance — the
+        // invariant test funds every actor.
+        uint256 bond = registry.disputeBond();
         vm.prank(recordSubject[id]);
-        registry.disputeAttestation(id, bytes32(seed));
+        registry.disputeAttestation{value: bond}(id, bytes32(seed));
         _touch(recordSubject[id], recordCategory[id]);
         disputed[id] = true;
         disputedAt[id] = uint64(block.timestamp);
+        bondOf[id] = bond;
+        outstandingBonds += bond;
+    }
+
+    /// @notice Settle the mirrored bond when a dispute closes: the
+    ///         bond is paid out on every exit (uphold, concede,
+    ///         expiry, revoke-while-disputed), so the mirror clears
+    ///         whenever the dispute flag does.
+    function _settleBond(uint256 id) internal {
+        if (bondOf[id] == 0) return;
+        outstandingBonds -= bondOf[id];
+        bondOf[id] = 0;
     }
 
     function resolveDispute(uint256 seed, bool uphold) external {
@@ -164,6 +188,7 @@ contract ReputationHandler is Test {
         disputed[id] = false;
         escalated[id] = false;
         disputedAt[id] = 0;
+        _settleBond(id);
         if (!uphold) {
             revoked[id] = true;
             activeByKey[
@@ -185,6 +210,7 @@ contract ReputationHandler is Test {
         disputed[id] = false;
         escalated[id] = false;
         disputedAt[id] = 0;
+        _settleBond(id);
     }
 
     /// @notice Escalate a dispute the attester ignored for at least
@@ -217,6 +243,7 @@ contract ReputationHandler is Test {
         disputed[id] = false;
         escalated[id] = false;
         disputedAt[id] = 0;
+        _settleBond(id);
         if (!uphold) {
             revoked[id] = true;
             activeByKey[
@@ -249,6 +276,18 @@ contract ReputationHandler is Test {
         // Forward only, up to ~400 days: crosses the 90-day and 365-day
         // decay tiers and the 30-day dispute window in a single run.
         vm.warp(block.timestamp + (seed % 400 days));
+    }
+
+    /// @notice Set the dispute bond (the handler deployed the
+    ///         registry, so it is the owner). The invariant test
+    ///         enables a bond so the fuzz exercises the bonded
+    ///         dispute path; the unit suite covers the free path.
+    ///         Guarded like every handler action: an over-cap value
+    ///         is a no-op, never a revert, so a fuzz call can never
+    ///         mask a broken invariant.
+    function setBond(uint256 bond) external {
+        if (bond > registry.MAX_DISPUTE_BOND()) return;
+        registry.setDisputeBond(bond);
     }
 
     /// @notice Strike one actor: their next attestations weigh less,
@@ -323,6 +362,14 @@ contract ReputationInvariants is Test {
         actors.push(makeAddr("frank"));
         handler = new ReputationHandler(actors);
         registry = handler.registry();
+        // Fund the handler and enable a bond, so the fuzz exercises
+        // bonded disputes and the bond-balance invariant. A pranked
+        // call draws its value from the pranked address, so each
+        // actor (the dispute subjects) is funded, not the handler.
+        for (uint256 i = 0; i < actors.length; i++) {
+            vm.deal(actors[i], 100 ether);
+        }
+        handler.setBond(0.01 ether);
         targetContract(address(handler));
     }
 
@@ -573,6 +620,21 @@ contract ReputationInvariants is Test {
         if (limit == 0) return; // 0 disables the limit entirely
         for (uint256 i = 0; i < actors.length; i++) {
             assertLe(registry.attestationsToday(actors[i]), limit);
+        }
+    }
+
+    /// @notice The registry holds exactly the bonds posted on open
+    ///         disputes — no more, no less. Every dispute escrows
+    ///         exactly `disputeBond`, and every exit (uphold, concede,
+    ///         expiry, revoke-while-disputed) pays its bond out, so
+    ///         the balance can never drift from the mirrored total.
+    ///         A stuck bond (or a payout that created ETH from
+    ///         nowhere) would break this on the next invariant check.
+    function invariant_dispute_bond_balance_matches() public view {
+        assertEq(address(registry).balance, handler.outstandingBonds());
+        uint256 created = handler.created();
+        for (uint256 id = 0; id < created; id++) {
+            assertEq(registry.disputeBondOf(id), handler.bondOf(id));
         }
     }
 }
