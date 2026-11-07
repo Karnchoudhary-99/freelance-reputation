@@ -343,6 +343,131 @@ contract DisputeAppealsTest is Test {
         assertEq(count, 2);
     }
 
+    function testAppealBondUpholdPaysAttester() public {
+        registry.setDisputeBond(0.1 ether);
+        vm.deal(alice, 10 ether);
+        vm.deal(bob, 10 ether);
+
+        uint256 id = _upheldIdWithBond();
+        // Dispute bond went to bob on the upheld resolution.
+        assertEq(bob.balance, 10.1 ether);
+        assertEq(alice.balance, 9.9 ether);
+
+        vm.prank(alice);
+        registry.appealDispute{value: 0.1 ether}(id);
+        assertEq(alice.balance, 9.8 ether);
+
+        registry.resolveAppeal(id, true);
+        // Appeal upheld: the new bond goes to the attester too.
+        assertEq(bob.balance, 10.2 ether);
+        assertEq(alice.balance, 9.8 ether);
+        assertEq(address(registry).balance, 0);
+    }
+
+    function testAppealBondConcedeRefundsSubject() public {
+        registry.setDisputeBond(0.1 ether);
+        vm.deal(alice, 10 ether);
+        vm.deal(bob, 10 ether);
+
+        uint256 id = _upheldIdWithBond();
+        assertEq(bob.balance, 10.1 ether);
+
+        vm.prank(alice);
+        registry.appealDispute{value: 0.1 ether}(id);
+        registry.resolveAppeal(id, false);
+        // Appeal conceded: the bond comes back to the subject.
+        assertEq(alice.balance, 9.9 ether);
+        assertEq(bob.balance, 10.1 ether);
+        assertEq(address(registry).balance, 0);
+    }
+
+    function testAppealRequiresExactBond() public {
+        registry.setDisputeBond(0.1 ether);
+        vm.deal(alice, 10 ether);
+        uint256 id = _upheldIdWithBond();
+
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.IncorrectDisputeBond.selector);
+        registry.appealDispute(id);
+
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.IncorrectDisputeBond.selector);
+        registry.appealDispute{value: 0.05 ether}(id);
+    }
+
+    function testAppealWhilePaused() public {
+        uint256 id = _upheldId();
+        registry.pause();
+
+        vm.prank(alice);
+        registry.appealDispute(id);
+        assertTrue(registry.isAppealed(id));
+        registry.resolveAppeal(id, true);
+        assertFalse(registry.isAppealed(id));
+        assertEq(registry.getScore(alice).average, 9500);
+    }
+
+    function testAppealOnExpiredRecordReverts() public {
+        // Shrink expiry so the record fades inside the appeal window.
+        registry.setExpiryDuration(1 days);
+        uint256 id = _upheldId();
+        vm.warp(block.timestamp + 2 days);
+
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.AttestationExpired.selector);
+        registry.appealDispute(id);
+    }
+
+    function testAppealRefreshesDecayOnUphold() public {
+        vm.prank(bob);
+        uint256 id = registry.attest(
+            alice,
+            ReputationRegistry.Category.Overall,
+            90,
+            bytes32("v1")
+        );
+        vm.prank(alice);
+        registry.disputeAttestation(id, bytes32("unfair"));
+        vm.prank(bob);
+        registry.resolveDispute(id, true);
+        vm.prank(alice);
+        registry.appealDispute(id);
+
+        // Age 200 days while the appeal is open, then arbitrate.
+        vm.warp(block.timestamp + 200 days);
+        registry.resolveAppeal(id, true);
+        // Upholding the appeal re-confirms: the decay clock restarts
+        // at the arbitration, so the record counts at full weight
+        // (10000 bps) instead of the 200-day half weight (5000).
+        assertEq(registry.getScore(alice).average, 9000);
+        assertEq(registry.getScore(alice).effectiveWeight, 10000);
+    }
+
+    /// @notice Same as _upheldId but with the dispute bond posted, so
+    ///         the caller can assert on balances afterwards.
+    function _upheldIdWithBond() internal returns (uint256) {
+        uint256 bond = registry.disputeBond();
+        vm.prank(bob);
+        uint256 id = registry.attest(
+            alice,
+            ReputationRegistry.Category.Overall,
+            90,
+            bytes32("v1")
+        );
+        vm.prank(carol);
+        registry.attest(
+            alice,
+            ReputationRegistry.Category.Overall,
+            100,
+            bytes32("v2")
+        );
+        vm.prank(alice);
+        registry.disputeAttestation{value: bond}(id, bytes32("unfair"));
+        vm.prank(bob);
+        registry.resolveDispute(id, true);
+        return id;
+    }
+
     function _latest(
         address subject
     ) internal view returns (uint64, uint256, uint256, uint256) {
