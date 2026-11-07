@@ -34,6 +34,7 @@ that travel with the worker, not the platform.
 - [x] Configurable governance windows (dispute window, escalation delay, appeal window — owner-retunable, apply live)
 - [x] Verified-only mode (owner toggle: only verified attesters may attest, every path)
 - [x] Time-windowed leaderboards (leaderboard as of any past/future time, category boards)
+- [x] Attestation requests (subjects ask a specific attester, fulfilment links the record)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -749,6 +750,54 @@ a DAO's review committee — to attest on their behalf.
   each attestation at all: authorize once, and the delegate submits
   directly until the expiry lapses.
 
+### Attestation requests
+
+A freelancer does not have to wait to be noticed: they can ask a
+specific client for a rating in a specific category — the outbound
+half of the flow, for the client who worked with them and never got
+around to attesting.
+
+- `requestAttestation(attester, category, contextHash)` — the subject
+  asks. `contextHash` ties the ask to off-chain context (a job id, a
+  deliverable reference) without storing the details on-chain. The
+  request stays answerable for `requestValidity` (30 days by default;
+  the owner may retune it between 1 and 365 days with
+  `setRequestValidity` — a retune only affects requests created after
+  it). One open request per (subject, attester, category): a second
+  ask while one is still open reverts, so a subject cannot spam the
+  same attester with the same request. Requesting yourself or the zero
+  address reverts, and requests are blocked while the registry is
+  paused.
+- `fulfillAttestationRequest(id, score, commentHash)` (and
+  `fulfillAttestationRequestWithEvidence`) — only the attester named
+  in the request may answer it, and only while it is open and
+  unexpired. The rating goes through the same writer as every other
+  attestation, so all the guards apply: pause, suspension,
+  verified-only mode, score range, the daily rate limit (a fresh
+  attestation consumes quota; updating an existing record is free),
+  and a disputed existing record blocks the fulfilment. Fulfilling
+  when you already have an active attestation for the same subject +
+  category updates that record in place instead of creating a second
+  one. On success the request is Fulfilled and the attestation records
+  `requestId` / `fromRequest`, so the record's provenance is visible
+  on-chain; a later plain re-attest never clears that link.
+- `cancelAttestationRequest(id)` — the subject withdraws an open ask.
+  Cancelling frees the (subject, attester, category) slot at once.
+  An expired request cannot be cancelled — it is already dead, so
+  the subject simply makes a fresh request — and cancelling still
+  works while the registry is paused, like a revoke.
+- **Delegates cannot fulfil requests.** The request names the attester
+  personally, so a delegate's answer would not carry the attester's
+  own response to it. A delegate can still attest directly via
+  `attestOnBehalf`.
+- **Reads.** `attestationRequest(id)` / `attestationRequestCount()`,
+  `openRequestId(subject, attester, category)` — the pending ask for
+  one triple, as `(exists, id)` (the flag exists because request id 0
+  is a real request) — `isRequestExpired(id)`, and the paginated
+  inbox/outbox views `getOpenRequestsForAttester` /
+  `getOpenRequestsBySubject` (oldest first, fulfilled / cancelled /
+  expired filtered out, empty page past the end).
+
 ### Example flow
 
 ```text
@@ -763,14 +812,14 @@ alice score = (60*3 + 90*1) / 4 = 67.50
 
 `test/Invariant.t.sol` drives the registry through attest / revoke /
 dispute / resolve / expire / escalate / owner-arbitrate / appeal /
-appeal-arbitrate cycles plus time warps (crossing the 90-day
+appeal-arbitrate / request / fulfil / cancel cycles plus time warps (crossing the 90-day
 and 365-day decay tiers and the 30-day dispute window) and owner strikes
 / strike-clearing, plus pause / unpause cycles and delegate set / revoke
 cycles (about half the attestations are routed through an active
 delegate when the attester has one), plus owner category-weight retunes
 (biased toward the default 100 and toward 0, so the fuzz exercises both
 the equal blend and full exclusion), with a guarded handler, so every handler call is
-expected to succeed and a revert can never mask a broken invariant. Sixteen
+expected to succeed and a revert can never mask a broken invariant. Seventeen
 invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
@@ -796,15 +845,19 @@ that range, whatever the weights, decay, or snapshot weights do), and
 the appeal mirror matching the registry with an appealed record always
 still active (not revoked, not disputed), an appeal usable exactly once
 per upheld resolution, and the appeal deadline agreeing with the stored
-resolution time.
-Baseline: 16 invariants × 256 runs × depth 100 — 25,600 handler calls
+resolution time, and fulfilled requests always linking to a matching
+attestation (same attester, subject, and category, flagged as from a
+request) whose own link points back at a fulfilled request for the same
+triple, with every open, unexpired request findable through
+`openRequestId`.
+Baseline: 19 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 8,128,507 gas, 36,806 bytes runtime).
+per-function gas (deploy 9,508,020 gas, 42,901 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 349 tests (333 unit + 16 invariants)
+forge test          # 417 tests (398 unit + 19 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 
