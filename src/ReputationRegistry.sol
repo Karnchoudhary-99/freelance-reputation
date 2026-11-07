@@ -37,7 +37,11 @@ pragma solidity 0.8.24;
 ///      If the attester ignores a dispute for 7 days, the subject may
 ///      escalate it to the registry owner, who arbitrates it — upholding
 ///      or conceding on the attester's behalf — so an unresponsive
-///      attester cannot stall a dispute for the full 30 days.
+///      attester cannot stall a dispute for the full 30 days. And if a
+///      dispute is resolved by upholding the attestation, the subject
+///      gets one appeal within 7 days: the record stays excluded from
+///      scores until the owner arbitrates the appeal, so neither party
+///      judges their own case.
 ///      Attestations expire: after `expiryDuration` (730 days by
 ///      default, owner-configurable, 0 disables expiry) an attestation
 ///      stops counting toward every score until the attester
