@@ -229,6 +229,39 @@ contract ReputationRegistry {
         uint64 expiresAt;
     }
 
+    /// @notice Whether an attestation request is still waiting for an
+    ///         answer. Expiry is time-derived, not a stored status: an
+    ///         Open request past `expiresAt` is dead — it can no longer
+    ///         be fulfilled or cancelled — but it stays Open in storage
+    ///         so the history of what was asked remains readable.
+    enum RequestStatus {
+        Open,
+        Fulfilled,
+        Cancelled
+    }
+
+    /// @notice A subject's ask for an attestation from a specific
+    ///         attester: "you worked with me, please rate me". The
+    ///         attester answers with `fulfillAttestationRequest`, which
+    ///         creates (or updates) the attestation and links the two
+    ///         records; the subject may withdraw the ask with
+    ///         `cancelAttestationRequest` while it is still open.
+    ///         `contextHash` is the keccak256 of off-chain context (a
+    ///         job id, a deliverable reference) so the request can be
+    ///         tied to a specific piece of work without storing the
+    ///         details on-chain. `attestationId` is the record the
+    ///         fulfilment created or updated; it is 0 until fulfilled.
+    struct AttestationRequest {
+        address subject;
+        address attester;
+        Category category;
+        bytes32 contextHash;
+        uint64 createdAt;
+        uint64 expiresAt;
+        RequestStatus status;
+        uint256 attestationId;
+    }
+
     error ZeroAddress();
     error SelfAttestation();
     error InvalidScore();
@@ -269,6 +302,13 @@ contract ReputationRegistry {
     error AlreadyAppealed();
     error AppealWindowExpired();
     error NotAppealed();
+    error UnknownAttestationRequest();
+    error RequestAlreadyOpen();
+    error NotRequestSubject();
+    error NotRequestAttester();
+    error RequestNotOpen();
+    error RequestExpired();
+    error InvalidRequestValidity();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -385,6 +425,24 @@ contract ReputationRegistry {
         address indexed recipient,
         uint256 amount
     );
+    event AttestationRequested(
+        uint256 indexed id,
+        address indexed subject,
+        address indexed attester,
+        Category category
+    );
+    event AttestationRequestCancelled(
+        uint256 indexed id,
+        address indexed subject,
+        address indexed attester
+    );
+    event AttestationRequestFulfilled(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject,
+        uint256 attestationId
+    );
+    event RequestValidityUpdated(uint64 validity);
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
@@ -464,6 +522,29 @@ contract ReputationRegistry {
     ///         it (see `setAppealWindow`). After the window the
     ///         resolution is final and the record counts again.
     uint256 public appealWindow = DEFAULT_APPEAL_WINDOW;
+
+    /// @notice How long an attestation request stays answerable after
+    ///         it is created. The deploy-time default (see
+    ///         `requestValidity`): 30 days — long enough for a busy
+    ///         client to answer, short enough that a stale ask does
+    ///         not linger as an open obligation forever.
+    uint64 public constant DEFAULT_REQUEST_VALIDITY = 30 days;
+
+    /// @notice Bounds on `requestValidity` (see `setRequestValidity`):
+    ///         at least a day, so a request is never born dead, and
+    ///         at most a year, so the owner cannot create requests
+    ///         that outlive the attestation expiry horizon in spirit.
+    uint64 public constant MIN_REQUEST_VALIDITY = 1 days;
+    uint64 public constant MAX_REQUEST_VALIDITY = 365 days;
+
+    /// @notice Current request validity: how long a request stays
+    ///         open (see `requestAttestation`). Starts at the
+    ///         documented default; the owner may retune it (see
+    ///         `setRequestValidity`). The new validity applies to
+    ///         requests created after the retune, from their own
+    ///         `createdAt` — open requests keep the deadline they
+    ///         were born with.
+    uint64 public requestValidity = DEFAULT_REQUEST_VALIDITY;
 
     /// @notice Longest a score proof may stay valid: a certificate must
     ///         be re-issued regularly, so a stale reputation cannot be
@@ -680,6 +761,24 @@ contract ReputationRegistry {
     mapping(address => ScoreProof) private _scoreProofs;
     // subject => whether a proof was ever issued (and not revoked).
     mapping(address => bool) private _hasScoreProof;
+    // Every attestation request, in creation order. Requests are never
+    // deleted: a fulfilled or cancelled request stays readable as the
+    // history of what was asked.
+    AttestationRequest[] private _attestationRequests;
+    // subject => request ids they created, attester => request ids
+    // addressed to them, both in creation order. Powers the
+    // open-request reads; fulfilled/cancelled/expired entries are
+    // filtered out by the views.
+    mapping(address => uint256[]) private _subjectRequests;
+    mapping(address => uint256[]) private _attesterRequests;
+    // keccak256(subject, attester, category) => id + 1 of the open
+    // request (0 == none open). Enforces one open request per
+    // (subject, attester, category): a subject cannot spam the same
+    // attester with the same ask. An expired open request still
+    // occupies its key until a fresh request replaces it — the
+    // creation check treats an expired entry as free, and the
+    // open-request views filter expired entries out.
+    mapping(bytes32 => uint256) private _openRequestByKey;
 
     /// @notice Attest a freelancer's work, or update your existing attestation
     ///         for the same subject + category.
@@ -790,6 +889,117 @@ contract ReputationRegistry {
                 true
             );
         }
+    }
+
+    /// @notice Whether an attestation request is dead by time: still
+    ///         Open in storage, but past `expiresAt`. A dead request
+    ///         can no longer be fulfilled or cancelled — the subject
+    ///         simply makes a fresh request — and the open-request
+    ///         views skip it.
+    function _isRequestExpired(
+        AttestationRequest storage req
+    ) internal view returns (bool) {
+        return
+            req.status == RequestStatus.Open &&
+            req.expiresAt <= block.timestamp;
+    }
+
+    /// @notice Key for the one-open-request-per-ask rule: a subject
+    ///         may have only one open request to a given attester for
+    ///         a given category at a time.
+    function _requestKey(
+        address subject,
+        address attester,
+        Category category
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(subject, attester, category));
+    }
+
+    /// @notice Ask a specific attester to rate you in `category` —
+    ///         the outbound half of the request flow (see
+    ///         `fulfillAttestationRequest`). Only one open request
+    ///         per (subject, attester, category) may exist: a second
+    ///         ask while one is still open reverts, so a subject
+    ///         cannot spam the same attester with the same request.
+    ///         An expired open request does not block a fresh one —
+    ///         it is dead, and the new request takes its place.
+    ///         `contextHash` ties the ask to off-chain context (a job
+    ///         id, a deliverable reference) without storing the
+    ///         details on-chain. The request stays answerable for
+    ///         `requestValidity` from creation. Blocked while the
+    ///         registry is paused: a request is the first step of an
+    ///         attestation, and no new attestation may start while
+    ///         paused.
+    /// @return id The request id.
+    function requestAttestation(
+        address attester,
+        Category category,
+        bytes32 contextHash
+    ) external returns (uint256 id) {
+        if (paused) revert RegistryPaused();
+        if (attester == address(0)) revert ZeroAddress();
+        if (attester == msg.sender) revert SelfAttestation();
+        bytes32 key = _requestKey(msg.sender, attester, category);
+        uint256 existing = _openRequestByKey[key];
+        if (existing != 0) {
+            AttestationRequest storage old = _attestationRequests[
+                existing - 1
+            ];
+            if (!_isRequestExpired(old)) revert RequestAlreadyOpen();
+        }
+        id = _attestationRequests.length;
+        _attestationRequests.push(
+            AttestationRequest({
+                subject: msg.sender,
+                attester: attester,
+                category: category,
+                contextHash: contextHash,
+                createdAt: uint64(block.timestamp),
+                expiresAt: uint64(block.timestamp) + requestValidity,
+                status: RequestStatus.Open,
+                attestationId: 0
+            })
+        );
+        _subjectRequests[msg.sender].push(id);
+        _attesterRequests[attester].push(id);
+        _openRequestByKey[key] = id + 1;
+        emit AttestationRequested(id, msg.sender, attester, category);
+    }
+
+    /// @notice Withdraw one of your own open requests. Only the
+    ///         subject may cancel, and only while the request is
+    ///         still open and unexpired: an expired request is
+    ///         already dead, so there is nothing to withdraw — make
+    ///         a fresh request instead. Cancelling frees the
+    ///         (subject, attester, category) slot at once.
+    function cancelAttestationRequest(uint256 id) external {
+        if (id >= _attestationRequests.length) {
+            revert UnknownAttestationRequest();
+        }
+        AttestationRequest storage req = _attestationRequests[id];
+        if (req.subject != msg.sender) revert NotRequestSubject();
+        if (req.status != RequestStatus.Open) revert RequestNotOpen();
+        if (_isRequestExpired(req)) revert RequestExpired();
+        req.status = RequestStatus.Cancelled;
+        bytes32 key = _requestKey(req.subject, req.attester, req.category);
+        if (_openRequestByKey[key] == id + 1) _openRequestByKey[key] = 0;
+        emit AttestationRequestCancelled(id, req.subject, req.attester);
+    }
+
+    /// @notice Retune how long a new attestation request stays
+    ///         answerable. Only the owner may call this. The new
+    ///         validity applies to requests created after the retune,
+    ///         from their own `createdAt` — open requests keep the
+    ///         deadline they were born with. Bounds: at least
+    ///         `MIN_REQUEST_VALIDITY` (a request must never be born
+    ///         dead), at most `MAX_REQUEST_VALIDITY`.
+    function setRequestValidity(uint64 validity) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (validity < MIN_REQUEST_VALIDITY || validity > MAX_REQUEST_VALIDITY) {
+            revert InvalidRequestValidity();
+        }
+        requestValidity = validity;
+        emit RequestValidityUpdated(validity);
     }
 
     /// @notice Authorize `delegate` to attest on your behalf until
