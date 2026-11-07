@@ -110,6 +110,13 @@ contract ReputationRegistry {
         bytes32 disputeReason; // keccak256 of off-chain dispute text, or 0
         uint64 disputedAt;
         bool escalated; // subject escalated the open dispute to the owner
+        bool appealed; // subject appealed an upheld resolution; excluded
+        // from every score until the owner arbitrates the appeal
+        uint64 resolvedAt; // when the last dispute resolution upheld the
+        // attestation (0 = no appeal available: never disputed, or the
+        // dispute was conceded/expired/revoked instead of upheld)
+        bool appealUsed; // an appeal was already raised for the current
+        // dispute outcome; a fresh dispute resets this
     }
 
     struct Score {
@@ -245,6 +252,10 @@ contract ReputationRegistry {
     error InvalidCategoryWeight();
     error BondTransferFailed();
     error ReentrantCall();
+    error NotAppealable();
+    error AlreadyAppealed();
+    error AppealWindowExpired();
+    error NotAppealed();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -295,6 +306,17 @@ contract ReputationRegistry {
         address indexed subject
     );
     event DisputeResolvedByOwner(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject,
+        bool upheld
+    );
+    event AppealRaised(
+        uint256 indexed id,
+        address indexed attester,
+        address indexed subject
+    );
+    event AppealResolved(
         uint256 indexed id,
         address indexed attester,
         address indexed subject,
@@ -388,6 +410,13 @@ contract ReputationRegistry {
     ///         enough that a stalled dispute does not hang for the full
     ///         30-day window.
     uint256 public constant ESCALATION_DELAY = 7 days;
+
+    /// @notice How long a subject has to appeal an upheld dispute
+    ///         resolution: a week is long enough to notice the outcome
+    ///         and file, short enough that an upheld attestation does
+    ///         not hang in limbo indefinitely — after the window the
+    ///         resolution is final and the record counts again.
+    uint256 public constant APPEAL_WINDOW = 7 days;
 
     /// @notice Longest a score proof may stay valid: a certificate must
     ///         be re-issued regularly, so a stale reputation cannot be
