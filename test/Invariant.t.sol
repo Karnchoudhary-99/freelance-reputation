@@ -60,6 +60,12 @@ contract ReputationHandler is Test {
     // the moment of pausing for the frozen-count invariant.
     bool public paused;
     uint256 public pausedAtCount;
+    // Verified-only mirror: when the mode is on, attest() verifies
+    // the attester first (the handler is the owner), so a fuzz
+    // attestation never hits the NotVerifiedAttester guard. The
+    // `verified` mapping mirrors the registry's verified flags.
+    bool public verifiedOnly;
+    mapping(address => bool) public verified;
     // Delegation mirror: expiry per (attester, delegate) pair, 0 when
     // never set or revoked. attest() routes through an active delegate
     // when one exists, so the mirror must track exactly what the
@@ -109,6 +115,13 @@ contract ReputationHandler is Test {
         if (strikes[attester] >= registry.MAX_STRIKES()) return;
         // A paused registry accepts no new attestations.
         if (paused) return;
+        // Verified-only mode gates every attestation: when it is on,
+        // the attester must be verified first (the handler is the
+        // owner, so it verifies on the fly and mirrors the flag).
+        if (verifiedOnly && !verified[attester]) {
+            registry.setVerifiedAttester(attester, true);
+            verified[attester] = true;
+        }
         // Subject is always a different actor, so self-attestation never fires.
         address subject = actors[(seed / actors.length + 1) % actors.length];
         if (subject == attester) return;
@@ -375,6 +388,16 @@ contract ReputationHandler is Test {
     function setBond(uint256 bond) external {
         if (bond > registry.MAX_DISPUTE_BOND()) return;
         registry.setDisputeBond(bond);
+    }
+
+    /// @notice Toggle verified-only mode (on for roughly a third of
+    ///         calls). The handler is the registry owner, so this
+    ///         always succeeds, and attest() verifies attesters on
+    ///         the fly while it is on.
+    function setVerifiedOnly(uint256 seed) external {
+        bool enabled = seed % 3 == 0;
+        registry.setVerifiedOnly(enabled);
+        verifiedOnly = enabled;
     }
 
     /// @notice Retune all three governance windows. The ordering rule
@@ -925,5 +948,21 @@ contract ReputationInvariants is Test {
         assertLt(registry.escalationDelay(), registry.disputeWindow());
         assertGe(registry.appealWindow(), 1 days);
         assertLe(registry.appealWindow(), 90 days);
+    }
+
+    /// @notice The verified-only mode and the verified flags always
+    ///         match the handler's mirror: a mode toggle the mirror
+    ///         missed would let the handler attest as an unverified
+    ///         attester (reverting and masking the other invariants),
+    ///         and a verification the mirror missed would misstate
+    ///         who may attest.
+    function invariant_verified_only_mirror_matches() public view {
+        assertEq(registry.verifiedOnly(), handler.verifiedOnly());
+        for (uint256 i = 0; i < actors.length; i++) {
+            assertEq(
+                registry.isVerifiedAttester(actors[i]),
+                handler.verified(actors[i])
+            );
+        }
     }
 }
