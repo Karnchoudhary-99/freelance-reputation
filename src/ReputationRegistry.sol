@@ -245,6 +245,7 @@ contract ReputationRegistry {
     error AttestationExpired();
     error AttesterSuspended();
     error InvalidDecayPeriods();
+    error InvalidGovernanceWindow();
     error InvalidProofValidity();
     error NoScoreProof();
     error NotDelegate();
@@ -332,6 +333,9 @@ contract ReputationRegistry {
     event StrikesCleared(address indexed attester);
     event ExpiryDurationUpdated(uint64 expiryDuration);
     event DecayPeriodsUpdated(uint256 fullPeriod, uint256 halfPeriod);
+    event DisputeWindowUpdated(uint256 disputeWindow);
+    event EscalationDelayUpdated(uint256 escalationDelay);
+    event AppealWindowUpdated(uint256 appealWindow);
     event ScoreProofIssued(
         address indexed subject,
         uint256 average,
@@ -406,21 +410,51 @@ contract ReputationRegistry {
 
     /// @notice How long an attester has to answer a dispute before the
     ///         subject may reinstate the attestation unilaterally.
-    uint256 public constant DISPUTE_WINDOW = 30 days;
+    ///         The deploy-time default (see `disputeWindow`): 30 days.
+    uint256 public constant DEFAULT_DISPUTE_WINDOW = 30 days;
 
     /// @notice How long a dispute must sit unanswered before the subject
     ///         may escalate it to the owner for arbitration: long enough
     ///         that the attester had a fair chance to answer, short
     ///         enough that a stalled dispute does not hang for the full
-    ///         30-day window.
-    uint256 public constant ESCALATION_DELAY = 7 days;
+    ///         dispute window. The deploy-time default (see
+    ///         `escalationDelay`): 7 days.
+    uint256 public constant DEFAULT_ESCALATION_DELAY = 7 days;
 
     /// @notice How long a subject has to appeal an upheld dispute
     ///         resolution: a week is long enough to notice the outcome
     ///         and file, short enough that an upheld attestation does
     ///         not hang in limbo indefinitely — after the window the
+    ///         resolution is final and the record counts again. The
+    ///         deploy-time default (see `appealWindow`): 7 days.
+    uint256 public constant DEFAULT_APPEAL_WINDOW = 7 days;
+
+    /// @notice Current dispute window: how long an attester has to
+    ///         answer a dispute before the subject may reinstate the
+    ///         attestation unilaterally (see `expireDispute`). Starts
+    ///         at the documented default; the owner may retune it
+    ///         (see `setDisputeWindow`). Shortening it lets subjects
+    ///         reclaim disputed attestations sooner; lengthening it
+    ///         gives attesters more time to answer. It must always
+    ///         stay longer than `escalationDelay`, so escalation can
+    ///         still fire before the window lapses.
+    uint256 public disputeWindow = DEFAULT_DISPUTE_WINDOW;
+
+    /// @notice Current escalation delay: how long a dispute must sit
+    ///         unanswered before the subject may escalate it to the
+    ///         owner (see `escalateDispute`). Starts at the documented
+    ///         default; the owner may retune it (see
+    ///         `setEscalationDelay`). It must always stay shorter than
+    ///         `disputeWindow`, so a dispute can be escalated before
+    ///         it expires.
+    uint256 public escalationDelay = DEFAULT_ESCALATION_DELAY;
+
+    /// @notice Current appeal window: how long a subject has to appeal
+    ///         an upheld dispute resolution (see `appealDispute`).
+    ///         Starts at the documented default; the owner may retune
+    ///         it (see `setAppealWindow`). After the window the
     ///         resolution is final and the record counts again.
-    uint256 public constant APPEAL_WINDOW = 7 days;
+    uint256 public appealWindow = DEFAULT_APPEAL_WINDOW;
 
     /// @notice Longest a score proof may stay valid: a certificate must
     ///         be re-issued regularly, so a stale reputation cannot be
