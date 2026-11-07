@@ -24,6 +24,16 @@ pragma solidity 0.8.24;
 ///      they believe is unfair; disputed attestations are excluded from
 ///      scores until the attester upholds them, concedes (revokes), or the
 ///      30-day dispute window lapses and the subject reinstates them.
+///      The overall score blends every category, but not necessarily
+///      equally: the owner may weight categories (see
+///      `setCategoryWeight`), so a registry for, say, safety-critical
+///      work can count Reliability twice as much as Timeliness.
+///      Weights default to 100 for every category (an equal blend) and
+///      may be set from 0 (the category drops out of the overall score
+///      entirely) to 1000 (ten times the default). Per-category scores
+///      are never weighted — a category's own average is always the
+///      plain blend of its attestations — and a retune re-weights the
+///      live overall score at once without rewriting any record.
 ///      If the attester ignores a dispute for 7 days, the subject may
 ///      escalate it to the registry owner, who arbitrates it — upholding
 ///      or conceding on the attester's behalf — so an unresponsive
@@ -106,7 +116,10 @@ contract ReputationRegistry {
         uint256 average; // scaled by 100, 0 when count == 0
         uint256 count; // active attestations included
         uint256 totalWeight; // raw snapshot weights, before decay
-        uint256 effectiveWeight; // decay-adjusted weight, in basis points
+        uint256 effectiveWeight; // decay-adjusted weight, in basis points;
+        // for the overall score the category weight scales it too
+        // (see `_scoreAt`), so it is the weight that actually
+        // counted toward the average
     }
 
     /// @notice One attestation input for a batch call.
@@ -229,6 +242,7 @@ contract ReputationRegistry {
     error InvalidDailyLimit();
     error IncorrectDisputeBond();
     error InvalidDisputeBond();
+    error InvalidCategoryWeight();
     error BondTransferFailed();
     error ReentrantCall();
 
@@ -326,6 +340,7 @@ contract ReputationRegistry {
     );
     event MaxAttestationsPerDayUpdated(uint256 maxAttestationsPerDay);
     event DisputeBondUpdated(uint256 disputeBond);
+    event CategoryWeightUpdated(Category indexed category, uint256 weight);
     event DisputeBondSettled(
         uint256 indexed id,
         address indexed recipient,
@@ -410,6 +425,18 @@ contract ReputationRegistry {
     ///         pricing genuine disputes out, so it is capped.
     uint256 public constant MAX_DISPUTE_BOND = 1 ether;
 
+    /// @notice Default weight of a category in the overall score:
+    ///         100 for every category, i.e. the overall score is the
+    ///         plain blend of all active attestations, exactly as
+    ///         before this feature.
+    uint256 public constant DEFAULT_CATEGORY_WEIGHT = 100;
+
+    /// @notice Largest weight the owner may give a category: 1000 is
+    ///         ten times the default, so one category can dominate the
+    ///         overall score but can never make the arithmetic overflow
+    ///         (see `_scoreAt`).
+    uint256 public constant MAX_CATEGORY_WEIGHT = 1000;
+
     /// @notice ETH a subject must stake to open a dispute. Default 0
     ///         — disputes are free until the owner opts in — so a
     ///         registry that wants free disputes keeps it at 0 and an
@@ -427,6 +454,15 @@ contract ReputationRegistry {
     ///         Zero when no bond was posted (the bond was 0) or the
     ///         dispute has closed.
     mapping(uint256 => uint256) private _disputeBond;
+
+    /// @notice Weight of each category in the overall score, relative
+    ///         to `DEFAULT_CATEGORY_WEIGHT` (100). Set to the default
+    ///         for every category at deploy time; the owner may retune
+    ///         them (see `setCategoryWeight`). A weight of 0 excludes
+    ///         the category from the overall score entirely — its
+    ///         attestations still count toward its own per-category
+    ///         score, which is never weighted.
+    mapping(Category => uint256) private _categoryWeights;
 
     /// @notice Reentrancy lock: the registry pays out ETH when a
     ///         dispute closes, so the dispute exits are guarded even
@@ -498,6 +534,14 @@ contract ReputationRegistry {
 
     constructor() {
         owner = msg.sender;
+        // Every category starts at the default weight, so the overall
+        // score is the plain blend of all attestations until the
+        // owner retunes it.
+        _categoryWeights[Category.Overall] = DEFAULT_CATEGORY_WEIGHT;
+        _categoryWeights[Category.Quality] = DEFAULT_CATEGORY_WEIGHT;
+        _categoryWeights[Category.Communication] = DEFAULT_CATEGORY_WEIGHT;
+        _categoryWeights[Category.Timeliness] = DEFAULT_CATEGORY_WEIGHT;
+        _categoryWeights[Category.Reliability] = DEFAULT_CATEGORY_WEIGHT;
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 keccak256(
@@ -2230,6 +2274,47 @@ contract ReputationRegistry {
         emit DisputeBondUpdated(bond);
     }
 
+    /// @notice Weight one category in the overall score. Only the
+    ///         owner may call this. The weight is relative to
+    ///         `DEFAULT_CATEGORY_WEIGHT` (100): 200 counts the category
+    ///         twice as much as the default, 0 drops it from the
+    ///         overall score entirely, 1000 is the cap (ten times the
+    ///         default). The new weight applies to the live overall
+    ///         score — and to the decay-preview views — at once: an
+    ///         overall score can move on a retune even though no
+    ///         attestation changed, and no record is ever rewritten.
+    ///         Per-category scores are never weighted, so a retune
+    ///         cannot move `getScoreByCategory` at all.
+    function setCategoryWeight(Category category, uint256 weight) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (weight > MAX_CATEGORY_WEIGHT) revert InvalidCategoryWeight();
+        _categoryWeights[category] = weight;
+        emit CategoryWeightUpdated(category, weight);
+    }
+
+    /// @notice Current weight of `category` in the overall score,
+    ///         relative to `DEFAULT_CATEGORY_WEIGHT` (100).
+    function categoryWeight(
+        Category category
+    ) external view returns (uint256) {
+        return _categoryWeights[category];
+    }
+
+    /// @notice All five category weights in enum order (Overall,
+    ///         Quality, Communication, Timeliness, Reliability), so a
+    ///         frontend can read the blend in one call.
+    function categoryWeights()
+        external
+        view
+        returns (uint256[5] memory weights)
+    {
+        weights[0] = _categoryWeights[Category.Overall];
+        weights[1] = _categoryWeights[Category.Quality];
+        weights[2] = _categoryWeights[Category.Communication];
+        weights[3] = _categoryWeights[Category.Timeliness];
+        weights[4] = _categoryWeights[Category.Reliability];
+    }
+
     /// @notice Bond currently posted on an open dispute, by
     ///         attestation id. Zero when no bond was posted or the
     ///         dispute has closed.
@@ -2425,9 +2510,21 @@ contract ReputationRegistry {
             if (filterCategory && a.category != category) continue;
             // Fixed-point decay: multiply before dividing so a weight-1
             // attestation at quarter weight still counts (2500 bps), instead
-            // of truncating to zero.
+            // of truncating to zero. For the overall score the
+            // category weight scales the effective weight too (a
+            // category weighted 200 counts twice as much as the
+            // default 100); per-category scores are never weighted,
+            // so their effective weight is decay only. The multiply
+            // cannot overflow: weight <= 3, decay <= 10000 bps,
+            // category weight <= 1000, so effective <= 30,000,000
+            // before the division by 100.
             uint256 effective = uint256(a.weight) *
                 decayFactorBpsAt(a.updatedAt, when);
+            if (!filterCategory) {
+                effective =
+                    (effective * _categoryWeights[a.category]) /
+                    DEFAULT_CATEGORY_WEIGHT;
+            }
             weightedSum += uint256(a.score) * effective;
             result.effectiveWeight += effective;
             result.totalWeight += a.weight;
