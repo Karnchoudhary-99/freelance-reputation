@@ -222,4 +222,116 @@ contract LeaderboardAtTest is Test {
             uint256(ReputationRegistry.Tier.Established)
         );
     }
+
+    function testCategoryBoardAtPastTime() public {
+        // Dave gets an 80 in Quality and Alice a 60, both at the
+        // current time (T0+300d) — so they only appear on boards at
+        // or after T0+300d, while Frank's Quality 90 from T0 is
+        // already there at T0+100d.
+        _attest(
+            bob,
+            dave,
+            ReputationRegistry.Category.Quality,
+            80
+        );
+        _attest(
+            carol,
+            alice,
+            ReputationRegistry.Category.Quality,
+            60
+        );
+
+        ReputationRegistry.LeaderboardEntry[]
+            memory early = registry.getLeaderboardByCategoryAt(
+                ReputationRegistry.Category.Quality,
+                T0 + 100 days,
+                10
+            );
+        assertEq(early.length, 1);
+        assertEq(early[0].subject, frank);
+        assertEq(early[0].average, 9000);
+        assertEq(early[0].count, 1);
+        // The tier on a category board is still the overall tier
+        // at that time.
+        assertEq(
+            uint256(early[0].tier),
+            uint256(ReputationRegistry.Tier.Trusted)
+        );
+
+        ReputationRegistry.LeaderboardEntry[]
+            memory mid = registry.getLeaderboardByCategoryAt(
+                ReputationRegistry.Category.Quality,
+                T0 + 300 days,
+                10
+            );
+        assertEq(mid.length, 3);
+        assertEq(mid[0].subject, frank);
+        assertEq(mid[0].average, 9000);
+        assertEq(mid[1].subject, dave);
+        assertEq(mid[1].average, 8000);
+        assertEq(mid[2].subject, alice);
+        assertEq(mid[2].average, 6000);
+
+        // Passing Overall returns exactly the overall board.
+        ReputationRegistry.LeaderboardEntry[]
+            memory overall = registry.getLeaderboardByCategoryAt(
+                ReputationRegistry.Category.Overall,
+                T0 + 100 days,
+                10
+            );
+        ReputationRegistry.LeaderboardEntry[]
+            memory plain = registry.getLeaderboardAt(T0 + 100 days, 10);
+        assertEq(overall.length, plain.length);
+        for (uint256 i = 0; i < overall.length; i++) {
+            assertEq(overall[i].subject, plain[i].subject);
+            assertEq(overall[i].average, plain[i].average);
+        }
+    }
+
+    function testOptedOutSubjectHiddenAtEveryTime() public {
+        vm.prank(dave);
+        registry.setLeaderboardOptOut(true);
+
+        // Dave is hidden from the board at every moment — past,
+        // present, and future — because opt-out is a listing rule
+        // read as it stands now.
+        assertEq(registry.getLeaderboardAt(T0 + 100 days, 10).length, 2);
+        assertEq(registry.getLeaderboardAt(T0 + 300 days, 10).length, 2);
+        assertEq(registry.getLeaderboardAt(T0 + 700 days, 10).length, 2);
+        // ...but his score is still readable directly.
+        assertEq(registry.getScore(dave).average, 7500);
+    }
+
+    function testLimitClampingAndZero() public view {
+        ReputationRegistry.LeaderboardEntry[]
+            memory one = registry.getLeaderboardAt(T0 + 100 days, 1);
+        assertEq(one.length, 1);
+        assertEq(one[0].subject, alice);
+
+        ReputationRegistry.LeaderboardEntry[]
+            memory zero = registry.getLeaderboardAt(T0 + 100 days, 0);
+        assertEq(zero.length, 0);
+
+        ReputationRegistry.LeaderboardEntry[]
+            memory all = registry.getLeaderboardAt(T0 + 100 days, 99);
+        assertEq(all.length, 3);
+    }
+
+    function testRevokedRecordExcludedEvenAtPastTime() public {
+        // Revoke both of Alice's records (bob's 100 is id 0,
+        // carol's 60 is id 7). The preview caveat, stated in the
+        // docs: revocation is read as it stands now, so Alice is
+        // missing even from the board at T0+100d, when her 100 was
+        // still live.
+        vm.prank(bob);
+        registry.revokeAttestation(0);
+        vm.prank(carol);
+        registry.revokeAttestation(7);
+
+        ReputationRegistry.LeaderboardEntry[]
+            memory early = registry.getLeaderboardAt(T0 + 100 days, 10);
+        assertEq(early.length, 2);
+        assertEq(early[0].subject, frank);
+        assertEq(early[1].subject, dave);
+    }
 }
