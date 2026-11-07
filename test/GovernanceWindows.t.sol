@@ -203,6 +203,9 @@ contract GovernanceWindowsTest is Test {
 
         // Retune the window to 5 days: the same dispute is now
         // expired, because the window runs from its own disputedAt.
+        // The delay must drop below the new window first, so the
+        // ordering rule (delay < window) still holds.
+        registry.setEscalationDelay(1 days);
         registry.setDisputeWindow(5 days);
         vm.prank(alice);
         registry.expireDispute(id);
@@ -306,6 +309,7 @@ contract GovernanceWindowsTest is Test {
         // paused — so a retune mid-pause still governs the exits.
         uint256 id = _disputedId();
         registry.pause();
+        registry.setEscalationDelay(1 days);
         registry.setDisputeWindow(5 days);
         vm.warp(T0 + 6 days);
         vm.prank(alice);
@@ -318,8 +322,8 @@ contract GovernanceWindowsTest is Test {
         // attestation on alice is untouched by the window changes.
         _attest(carol, alice, 100);
         uint256 id = _disputedId();
-        registry.setDisputeWindow(5 days);
         registry.setEscalationDelay(1 days);
+        registry.setDisputeWindow(5 days);
         registry.setAppealWindow(14 days);
         assertEq(registry.getScore(alice).average, 10000);
         assertEq(registry.getScore(alice).count, 1);
