@@ -225,6 +225,8 @@ contract ReputationRegistry {
     error NoScoreProof();
     error NotDelegate();
     error InvalidDelegate();
+    error DailyAttestationLimitReached();
+    error InvalidDailyLimit();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -318,6 +320,7 @@ contract ReputationRegistry {
         address indexed attester,
         address indexed delegate
     );
+    event MaxAttestationsPerDayUpdated(uint256 maxAttestationsPerDay);
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
@@ -374,6 +377,24 @@ contract ReputationRegistry {
     ///         (attestations then count forever, as before this feature).
     uint64 public expiryDuration = 730 days;
 
+    /// @notice The highest daily attestation limit the owner may set:
+    ///         a limit above this would stop being a spam control and
+    ///         start looking like no limit at all, so it is capped.
+    uint256 public constant MAX_DAILY_LIMIT = 1000;
+
+    /// @notice Most fresh attestations one attester may create in a
+    ///         single UTC day. Default 50 — far above what a genuine
+    ///         attester files in a day, low enough that a spam account
+    ///         cannot flood the registry with new records. Only fresh
+    ///         attestations count: re-attesting (updating) an existing
+    ///         record is always free, so an attester can keep their
+    ///         existing assessments current without burning the quota.
+    ///         The owner may change this (see
+    ///         `setMaxAttestationsPerDay`); 0 disables the limit
+    ///         entirely. The day bucket is `block.timestamp / 1 days`,
+    ///         so the quota resets at each UTC midnight.
+    uint256 public maxAttestationsPerDay = 50;
+
     /// @notice EIP-712 type hash for a signed attestation. The attester
     ///         signs off-chain (e.g. from a mobile wallet) and anyone —
     ///         a relayer, a platform backend — may submit it on-chain.
@@ -417,6 +438,14 @@ contract ReputationRegistry {
     /// @notice Strikes per attester, set by the owner (see
     ///         `strikeAttester`). Three strikes suspends the attester.
     mapping(address => uint256) private _strikes;
+
+    /// @notice Fresh attestations per attester per UTC day, keyed by
+    ///         `block.timestamp / 1 days`. Only fresh records count
+    ///         (see `maxAttestationsPerDay`); re-attests never touch
+    ///         this mapping. Old buckets are never read again, so they
+    ///         are left to sit — deleting them would cost gas for no
+    ///         benefit.
+    mapping(address => mapping(uint256 => uint256)) private _attestationsPerDay;
 
     /// @notice Next usable nonce per attester (replay protection).
     mapping(address => uint256) public nonces;
@@ -888,6 +917,19 @@ contract ReputationRegistry {
             emit AttestationUpdated(id, attester, subject, category, score, weight);
             _recordSnapshot(subject, category);
             return id;
+        }
+
+        // Fresh attestations only: re-attests (the branch above) never
+        // consume quota, so updating an existing assessment is always
+        // free. The check sits after the pause / suspension guards at
+        // the top, and the limit hit reverts before any storage is
+        // written, so a failed batch leaves no partial state behind.
+        if (maxAttestationsPerDay > 0) {
+            uint256 day = block.timestamp / 1 days;
+            if (_attestationsPerDay[attester][day] >= maxAttestationsPerDay) {
+                revert DailyAttestationLimitReached();
+            }
+            _attestationsPerDay[attester][day]++;
         }
 
         id = _attestations.length;
@@ -2037,6 +2079,16 @@ contract ReputationRegistry {
         return _verifiedAttesters[attester];
     }
 
+    /// @notice How many fresh attestations an attester has filed in
+    ///         the current UTC day (since the last UTC midnight).
+    ///         Re-attests never count, so this is the number against
+    ///         `maxAttestationsPerDay`.
+    function attestationsToday(
+        address attester
+    ) external view returns (uint256) {
+        return _attestationsPerDay[attester][block.timestamp / 1 days];
+    }
+
     /// @notice Change how long attestations count toward scores. Only
     ///         the owner may call this. The new duration applies to
     ///         every record from its own last update — it is not
@@ -2073,6 +2125,21 @@ contract ReputationRegistry {
         decayFullPeriod = fullPeriod;
         decayHalfPeriod = halfPeriod;
         emit DecayPeriodsUpdated(fullPeriod, halfPeriod);
+    }
+
+    /// @notice Change the daily fresh-attestation limit per attester.
+    ///         Only the owner may call this. The limit applies from
+    ///         the moment it is set: lowering it can block an attester
+    ///         who already filed that many today, and raising it (or
+    ///         setting it to 0, which disables the limit entirely)
+    ///         unblocks them at once. The cap is `MAX_DAILY_LIMIT`
+    ///         (1000) — a higher number would not be a spam control.
+    ///         Existing records and today's counts are never rewritten.
+    function setMaxAttestationsPerDay(uint256 limit) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (limit > MAX_DAILY_LIMIT) revert InvalidDailyLimit();
+        maxAttestationsPerDay = limit;
+        emit MaxAttestationsPerDayUpdated(limit);
     }
 
     /// @notice Freeze the registry in an emergency: a bug, a spam

@@ -9,7 +9,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/Governance.t.sol`, `test/Delegation.t.sol`,
 `test/DisputeEscalation.t.sol`, `test/BatchReads.t.sol`,
 `test/LeaderboardOptOut.t.sol`, `test/TopAttesters.t.sol`,
-`test/DecayConfig.t.sol`, and `test/ReputationBadges.t.sol`.
+`test/DecayConfig.t.sol`, `test/ReputationBadges.t.sol`, and
+`test/AttesterRateLimit.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -18,8 +19,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 6,702,638 gas |
-| Runtime size | 30,754 bytes |
+| Deployment cost | 6,811,812 gas |
+| Runtime size | 31,046 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -194,6 +195,17 @@ reach the TopRated and Veteran bars; on a small subject the min
 (~3.7k gas) is the honest comparison. `getBadgesFor` averages ~98k
 on the 3-subject test batches for the same reason.
 
+Daily attestation limit added ~109k gas to deployment (+292 bytes):
+the `maxAttestationsPerDay` slot, the `_attestationsPerDay` mapping,
+the `setMaxAttestationsPerDay` / `attestationsToday` pair plus its
+event, and the limit check inside `_attest`. A fresh attestation now
+pays one extra mapping read plus one cold-slot write on its first
+filing of the day (later filings that day are warm updates); re-attests
+never touch the counter, so their cost is unchanged.
+`setMaxAttestationsPerDay` is a single-slot update (~29k gas avg, in
+line with `setExpiryDuration`), and `attestationsToday` is a pure
+view (~2.8k gas).
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -216,6 +228,7 @@ on the 3-subject test batches for the same reason.
 | `strikeAttester` | 21,677 | 35,135 | 28,697 | 45,797 | 43 |
 | `clearStrikes` | 21,697 | 22,433 | 21,902 | 23,333 | 5 |
 | `setExpiryDuration` | 21,708 | 26,729 | 27,776 | 27,788 | 15 |
+| `setMaxAttestationsPerDay` | 23,738 | 28,799 | 29,792 | 29,804 | 17 |
 | `pause` | 23,472 | 42,377 | 46,857 | 46,857 | 19 |
 | `unpause` | 23,494 | 24,849 | 24,964 | 25,634 | 7 |
 | `transferOwnership` | 23,879 | 38,275 | 47,898 | 47,898 | 11 |
@@ -235,6 +248,7 @@ on the 3-subject test batches for the same reason.
 | `latestScoreSnapshot` (view) | 3,193 | 10,633 | 12,122 | 12,122 | 6 |
 | `attesterWeight` (view) | 2,654 | 18,582 | 20,958 | 30,314 | 24 |
 | `attesterStats` (view) | 5,368 | 10,083 | 12,441 | 12,441 | 3 |
+| `attestationsToday` (view) | 2,780 | 2,780 | 2,780 | 2,780 | 17 |
 | `decayFactorBps` (view) | 619 | 746 | 794 | 808 | 7 |
 | `decayFactorBpsAt` (view) | 614 | 733 | 783 | 803 | 6 |
 | `getScoreAt` (view) | 10,096 | 17,139 | 16,614 | 25,861 | 15 |
@@ -307,7 +321,7 @@ the page size, not with the subject's total history.
   allocation); `setEvidence` afterwards is a single-slot update
   (~39k gas). Evidence never triggers a snapshot or score
   recomputation, so it stays off the expensive paths.
-- **Invariant fuzz baseline:** 11 invariants × 256 runs × depth 100
+- **Invariant fuzz baseline:** 12 invariants × 256 runs × depth 100
   (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
   baseline; re-run `forge snapshot` after contract changes and diff it.
