@@ -12,7 +12,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/DecayConfig.t.sol`, `test/ReputationBadges.t.sol`, and
 `test/AttesterRateLimit.t.sol`, and
 `test/DisputeBond.t.sol`, `test/CategoryWeights.t.sol`, and
-`test/DisputeAppeals.t.sol`, and `test/GovernanceWindows.t.sol`.
+`test/DisputeAppeals.t.sol`, and `test/GovernanceWindows.t.sol`, and
+`test/VerifiedOnly.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -21,8 +22,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 8,344,339 gas |
-| Runtime size | 36,969 bytes |
+| Deployment cost | 8,401,307 gas |
+| Runtime size | 37,232 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -261,6 +262,18 @@ update (~28–30k gas avg, in line with the other owner setters).
 The fuzz handler now retunes all three windows mid-run, and a 17th
 invariant checks they stay in bounds and ordered.
 
+Verified-only mode added ~57k gas to deployment (+263 bytes): the
+`verifiedOnly` slot, the `setVerifiedOnly` setter plus its event,
+the `NotVerifiedAttester` error, and one extra flag read in
+`_attest` on every path (direct, batch, signed, delegated, and
+re-attest). `setVerifiedOnly` is a single-slot update (~24k gas
+warm; the ~47k maxima are first writes on fresh deployments in
+these tests). Attestations pay one extra storage read — no new
+writes, no score-path change — so read costs do not move. The fuzz
+handler now toggles the mode mid-run (verifying attesters on the
+fly), and an 18th invariant mirrors the mode and the verified
+flags.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -280,6 +293,7 @@ invariant checks they stay in bounds and ordered.
 | `attestBatchWithEvidence` | 547,375 | 749,345 | 749,345 | 951,315 | 2 |
 | `setEvidence` | 24,256 | 38,713 | 33,399 | 55,154 | 8 |
 | `setVerifiedAttester` | 21,949 | 38,149 | 45,818 | 45,818 | 15 |
+| `setVerifiedOnly` | 23,841 | 42,822 | 47,010 | 47,010 | 16 |
 | `strikeAttester` | 21,677 | 35,135 | 28,697 | 45,797 | 43 |
 | `clearStrikes` | 21,697 | 22,433 | 21,902 | 23,333 | 5 |
 | `setExpiryDuration` | 21,708 | 26,729 | 27,776 | 27,788 | 15 |
@@ -383,7 +397,7 @@ the page size, not with the subject's total history.
   allocation); `setEvidence` afterwards is a single-slot update
   (~39k gas). Evidence never triggers a snapshot or score
   recomputation, so it stays off the expensive paths.
-- **Invariant fuzz baseline:** 17 invariants × 256 runs × depth 100
+- **Invariant fuzz baseline:** 18 invariants × 256 runs × depth 100
   (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
   baseline; re-run `forge snapshot` after contract changes and diff it.

@@ -56,6 +56,10 @@ pragma solidity 0.8.24;
 ///      attestation carries +1 snapshot weight, capped at 3, so
 ///      established clients count a little more. Verification is a
 ///      snapshot-time boost only — it never rewrites existing records.
+///      The owner may also switch the registry to verified-only
+///      mode, so only verified attesters can attest at all — the
+///      allowlist a registry needs after a spam wave, or from the
+///      start when only KYC'd clients should ever file.
 ///      The owner may also strike a misbehaving attester (fake
 ///      endorsements, spam, paid reviews): each strike lowers the
 ///      weight of the attester's next attestations by 1, floored at 1,
@@ -258,6 +262,7 @@ contract ReputationRegistry {
     error IncorrectDisputeBond();
     error InvalidDisputeBond();
     error InvalidCategoryWeight();
+    error NotVerifiedAttester();
     error BondTransferFailed();
     error ReentrantCall();
     error NotAppealable();
@@ -331,6 +336,7 @@ contract ReputationRegistry {
         bool upheld
     );
     event AttesterVerified(address indexed attester, bool verified);
+    event VerifiedOnlyUpdated(bool verifiedOnly);
     event LeaderboardOptOut(address indexed subject, bool optedOut);
     event AttesterStruck(address indexed attester, uint256 strikes);
     event StrikesCleared(address indexed attester);
@@ -579,6 +585,18 @@ contract ReputationRegistry {
     /// @notice Verified attesters, set by the owner (see
     ///         `setVerifiedAttester`).
     mapping(address => bool) private _verifiedAttesters;
+
+    /// @notice Whether only verified attesters may attest (see
+    ///         `setVerifiedOnly`). Off by default: any attester may
+    ///         file an attestation, and verification is only a +1
+    ///         weight boost. When the owner switches it on, the
+    ///         registry becomes allowlist-only — an unverified
+    ///         attester's calls revert with `NotVerifiedAttester`
+    ///         on every path (direct, batch, signed, delegated),
+    ///         including re-attests of their own records. Existing
+    ///         records and scores are never touched: the mode gates
+    ///         new writes, not reads.
+    bool public verifiedOnly;
 
     /// @notice Delegates per attester: when an authorized delegate's
     ///         authority lapses (see `setDelegate`). `_delegateList`
@@ -1055,6 +1073,15 @@ contract ReputationRegistry {
         if (subject == attester) revert SelfAttestation();
         if (score > MAX_SCORE) revert InvalidScore();
         if (_strikes[attester] >= MAX_STRIKES) revert AttesterSuspended();
+        // Verified-only mode gates every attestation path — direct,
+        // batch, signed, delegated — and re-attests too: an
+        // unverified attester cannot create or update a record while
+        // it is on. The check sits in `_attest` so no entry point
+        // can bypass it, and it reads the live flag, so verifying
+        // an attester unblocks them at once.
+        if (verifiedOnly && !_verifiedAttesters[attester]) {
+            revert NotVerifiedAttester();
+        }
 
         uint8 weight = attesterWeight(attester);
         bytes32 key = _key(attester, subject, category);
@@ -2328,6 +2355,21 @@ contract ReputationRegistry {
         if (attester == address(0)) revert ZeroAddress();
         _verifiedAttesters[attester] = verified;
         emit AttesterVerified(attester, verified);
+    }
+
+    /// @notice Switch verified-only mode on or off. Only the owner
+    ///         may call this. When on, only verified attesters may
+    ///         attest — the registry becomes allowlist-only, which is
+    ///         what a registry that has been spammed (or one that
+    ///         only ever wants KYC'd clients attesting) needs. When
+    ///         off again, any attester may file, exactly as before.
+    ///         The switch never touches existing records or scores:
+    ///         it gates new writes only, and an attester verified
+    ///         while the mode is on may attest at once.
+    function setVerifiedOnly(bool enabled) external {
+        if (msg.sender != owner) revert NotOwner();
+        verifiedOnly = enabled;
+        emit VerifiedOnlyUpdated(enabled);
     }
 
     /// @notice Strike a misbehaving attester — fake endorsements, spam,
