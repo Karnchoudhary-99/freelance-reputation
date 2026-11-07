@@ -11,7 +11,7 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/LeaderboardOptOut.t.sol`, `test/TopAttesters.t.sol`,
 `test/DecayConfig.t.sol`, `test/ReputationBadges.t.sol`, and
 `test/AttesterRateLimit.t.sol`, and
-`test/DisputeBond.t.sol`.
+`test/DisputeBond.t.sol`, and `test/CategoryWeights.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -20,8 +20,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 6,820,591 gas |
-| Runtime size | 33,155 bytes |
+| Deployment cost | 7,111,268 gas |
+| Runtime size | 34,052 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -221,6 +221,20 @@ single-slot setters), and `disputeBondOf` is a pure view (~4.6k gas).
 The bond itself is the dominant cost of the feature for users: it is
 real ETH escrowed per dispute, not gas.
 
+Category weights added ~291k gas to deployment (+897 bytes): the
+`_categoryWeights` mapping (five slots initialized in the
+constructor), the `DEFAULT_CATEGORY_WEIGHT` / `MAX_CATEGORY_WEIGHT`
+constants, the `setCategoryWeight` / `categoryWeight` /
+`categoryWeights` trio plus the `CategoryWeightUpdated` event, and
+the weight scaling plus the zero-weight skip inside `_scoreAt`. A
+retune is a single-slot update (~29k gas, in line with the other
+owner setters); the per-attestation cost is one extra mapping read
+in the overall-score scan only — per-category scores never touch the
+weights, so their cost is unchanged. A zero-weight category costs
+nothing extra either: its records are skipped before the decay
+multiplication, so a fully excluded category is cheaper to score
+than a weighted one.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -338,7 +352,7 @@ the page size, not with the subject's total history.
   allocation); `setEvidence` afterwards is a single-slot update
   (~39k gas). Evidence never triggers a snapshot or score
   recomputation, so it stays off the expensive paths.
-- **Invariant fuzz baseline:** 12 invariants × 256 runs × depth 100
+- **Invariant fuzz baseline:** 15 invariants × 256 runs × depth 100
   (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
   baseline; re-run `forge snapshot` after contract changes and diff it.
