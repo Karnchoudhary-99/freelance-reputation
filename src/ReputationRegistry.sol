@@ -128,6 +128,10 @@ contract ReputationRegistry {
         // dispute was conceded/expired/revoked instead of upheld)
         bool appealUsed; // an appeal was already raised for the current
         // dispute outcome; a fresh dispute resets this
+        uint256 requestId; // the request this record was created or last
+        // updated through (see `fulfillAttestationRequest`); 0 when
+        // the record never came from a request
+        bool fromRequest; // whether `requestId` names a real request
     }
 
     struct Score {
@@ -1002,6 +1006,100 @@ contract ReputationRegistry {
         emit RequestValidityUpdated(validity);
     }
 
+    /// @notice Answer one of your open attestation requests: file the
+    ///         rating the subject asked for. Only the attester named
+    ///         in the request may fulfil it — a delegate cannot
+    ///         answer on their behalf, because the request is a
+    ///         personal ask to that attester, and a delegate's
+    ///         attestation would not carry the attester's own answer
+    ///         to it (a delegate can still attest directly via
+    ///         `attestOnBehalf`). The rating goes through `_attest`
+    ///         with all its guards — pause, suspension, verified-only
+    ///         mode, score range, daily rate limit (a fresh
+    ///         attestation consumes quota; updating an existing
+    ///         record is free) — and a disputed existing record
+    ///         blocks the fulfilment until the dispute resolves.
+    ///         Fulfilling when you already have an active attestation
+    ///         for the same subject + category updates that record
+    ///         in place (and links it to this request) instead of
+    ///         creating a second one. On success the request is
+    ///         Fulfilled, the slot frees, and the attestation records
+    ///         which request it came from.
+    /// @return attestationId The attestation created or updated.
+    function fulfillAttestationRequest(
+        uint256 id,
+        uint8 score,
+        bytes32 commentHash
+    ) external returns (uint256 attestationId) {
+        return
+            _fulfillRequest(
+                msg.sender,
+                id,
+                score,
+                commentHash,
+                bytes32(0),
+                false
+            );
+    }
+
+    /// @notice `fulfillAttestationRequest` with supporting evidence
+    ///         attached: same request rules, same evidence semantics
+    ///         as `attestWithEvidence` (replaces the evidence on an
+    ///         updated record).
+    function fulfillAttestationRequestWithEvidence(
+        uint256 id,
+        uint8 score,
+        bytes32 commentHash,
+        bytes32 evidenceHash
+    ) external returns (uint256 attestationId) {
+        return
+            _fulfillRequest(
+                msg.sender,
+                id,
+                score,
+                commentHash,
+                evidenceHash,
+                true
+            );
+    }
+
+    function _fulfillRequest(
+        address attester,
+        uint256 id,
+        uint8 score,
+        bytes32 commentHash,
+        bytes32 evidenceHash,
+        bool replaceEvidence
+    ) internal returns (uint256 attestationId) {
+        if (id >= _attestationRequests.length) {
+            revert UnknownAttestationRequest();
+        }
+        AttestationRequest storage req = _attestationRequests[id];
+        if (req.attester != attester) revert NotRequestAttester();
+        if (req.status != RequestStatus.Open) revert RequestNotOpen();
+        if (_isRequestExpired(req)) revert RequestExpired();
+        attestationId = _attestWithRequest(
+            attester,
+            req.subject,
+            req.category,
+            score,
+            commentHash,
+            evidenceHash,
+            replaceEvidence,
+            id + 1
+        );
+        req.status = RequestStatus.Fulfilled;
+        req.attestationId = attestationId;
+        bytes32 key = _requestKey(req.subject, req.attester, req.category);
+        if (_openRequestByKey[key] == id + 1) _openRequestByKey[key] = 0;
+        emit AttestationRequestFulfilled(
+            id,
+            attester,
+            req.subject,
+            attestationId
+        );
+    }
+
     /// @notice Authorize `delegate` to attest on your behalf until
     ///         `expiresAt` (a unix timestamp, must be in the future).
     ///         The delegate's submissions are recorded as yours: the
@@ -1269,6 +1367,8 @@ contract ReputationRegistry {
         return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
     }
 
+    /// @notice Direct (non-request) attestations carry no request
+    ///         link: `requestIdPlusOne` 0.
     function _attest(
         address attester,
         address subject,
@@ -1277,6 +1377,40 @@ contract ReputationRegistry {
         bytes32 commentHash,
         bytes32 evidenceHash,
         bool replaceEvidence
+    ) internal returns (uint256 id) {
+        return
+            _attestWithRequest(
+                attester,
+                subject,
+                category,
+                score,
+                commentHash,
+                evidenceHash,
+                replaceEvidence,
+                0
+            );
+    }
+
+    /// @notice The shared attestation writer: direct, batch, signed,
+    ///         delegated, and request-fulfilment paths all land here,
+    ///         so no entry point can bypass the guards. A request
+    ///         fulfilment passes its request id + 1 (`requestIdPlusOne`;
+    ///         0 means "not from a request", the same sentinel the
+    ///         `_activeByKey` and `_openRequestByKey` mappings use);
+    ///         every other path passes 0. Updating an existing record
+    ///         through a request links the record to that request; a
+    ///         plain re-attest leaves an existing link untouched, so
+    ///         the record keeps the provenance of the request it came
+    ///         from.
+    function _attestWithRequest(
+        address attester,
+        address subject,
+        Category category,
+        uint8 score,
+        bytes32 commentHash,
+        bytes32 evidenceHash,
+        bool replaceEvidence,
+        uint256 requestIdPlusOne
     ) internal returns (uint256 id) {
         if (paused) revert RegistryPaused();
         if (subject == address(0)) revert ZeroAddress();
@@ -1309,6 +1443,13 @@ contract ReputationRegistry {
             a.score = score;
             a.weight = weight;
             a.commentHash = commentHash;
+            // A request fulfilment that updates an existing record
+            // links the record to the request; a plain re-attest
+            // never clears an existing link (see `_attestWithRequest`).
+            if (requestIdPlusOne != 0) {
+                a.requestId = requestIdPlusOne - 1;
+                a.fromRequest = true;
+            }
             // Plain re-attests (attest / attestBatch / signed paths) pass
             // replaceEvidence == false and must not wipe evidence that
             // was attached earlier; attestWithEvidence replaces it.
@@ -1324,12 +1465,16 @@ contract ReputationRegistry {
         // free. The check sits after the pause / suspension guards at
         // the top, and the limit hit reverts before any storage is
         // written, so a failed batch leaves no partial state behind.
+        // The day bucket is computed inline (no local) to keep this
+        // function under the stack limit.
         if (maxAttestationsPerDay > 0) {
-            uint256 day = block.timestamp / 1 days;
-            if (_attestationsPerDay[attester][day] >= maxAttestationsPerDay) {
+            if (
+                _attestationsPerDay[attester][block.timestamp / 1 days] >=
+                maxAttestationsPerDay
+            ) {
                 revert DailyAttestationLimitReached();
             }
-            _attestationsPerDay[attester][day]++;
+            _attestationsPerDay[attester][block.timestamp / 1 days]++;
         }
 
         id = _attestations.length;
@@ -1351,7 +1496,11 @@ contract ReputationRegistry {
                 escalated: false,
                 appealed: false,
                 resolvedAt: 0,
-                appealUsed: false
+                appealUsed: false,
+                requestId: requestIdPlusOne == 0
+                    ? 0
+                    : requestIdPlusOne - 1,
+                fromRequest: requestIdPlusOne != 0
             })
         );
         _subjectAttestations[subject].push(id);
