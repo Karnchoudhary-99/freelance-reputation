@@ -28,6 +28,7 @@ that travel with the worker, not the platform.
 - [x] Dispute escalation (subject escalates after 7 unanswered days, owner arbitrates)
 - [x] Milestone badges (RisingStar → Veteran, cumulative, decay-aware, batch reads)
 - [x] Attester daily rate limit (anti-spam cap, owner-configurable, re-attests free)
+- [x] Dispute bonds (opt-in ETH stake on disputes, attester keeps it on uphold, subject refunded otherwise)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -140,6 +141,36 @@ A freelancer who believes an attestation is unfair can challenge it:
   paused, like every other dispute exit.
 - While a dispute is open, the attester cannot quietly overwrite the
   record with a fresh `attest` call; revoking it settles the dispute.
+
+### Dispute bonds
+
+Disputes are free by default, but a registry under dispute spam can
+make the subject stake ETH to open one:
+
+- `setDisputeBond(bond)` — only the owner. `0` disables the bond
+  (disputes are free again); anything above `MAX_DISPUTE_BOND`
+  (1 ether) reverts. Retuning never re-prices bonds already posted —
+  each open dispute settles at the amount it was opened with.
+- `disputeAttestation(id, reasonHash)` is `payable` and requires
+  exactly `disputeBond` wei: too little, too much, or any value while
+  the bond is 0 all revert with `IncorrectDisputeBond`.
+  `disputeBondOf(id)` reports the bond posted on a dispute (0 once
+  it has closed).
+- Every dispute exit settles the bond: upholding pays it to the
+  attester, conceding refunds it to the subject, expiry refunds it
+  to the subject (an unanswered dispute is not one the subject
+  lost), and revoking while disputed refunds it to the subject.
+  Owner arbitration settles the same way as an attester resolution.
+  The registry holds exactly the outstanding bonds — the fuzz suite
+  checks the balance against a mirror on every run.
+- Settlement is checks-effects-interactions (the bond is cleared
+  before the transfer lands) plus a reentrancy guard on all five
+  ETH-touching functions, so a receiving contract cannot re-enter a
+  dispute exit mid-payout. One honest limitation: settlement is a
+  direct transfer, so it fails closed — if the recipient cannot
+  receive ETH, that dispute exit reverts and the dispute stays open
+  until another exit path pays someone who can (e.g. expiry refunds
+  the subject, or the owner arbitrates the other way).
 
 ### Integrator ergonomics
 
@@ -600,7 +631,7 @@ and 365-day decay tiers and the 30-day dispute window) and owner strikes
 / strike-clearing, plus pause / unpause cycles and delegate set / revoke
 cycles (about half the attestations are routed through an active
 delegate when the attester has one), with a guarded handler, so every handler call is
-expected to succeed and a revert can never mask a broken invariant. Twelve
+expected to succeed and a revert can never mask a broken invariant. Thirteen
 invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
@@ -615,10 +646,13 @@ staying frozen while the registry is paused, and the delegation mirror
 matching the registry with `isDelegate` true exactly while the mirrored
 expiry is still in the future, and the escalation mirror matching the
 registry with an escalated record always still disputed, and no
-attester's `attestationsToday` ever exceeding `maxAttestationsPerDay`.
-Baseline: 12 invariants × 256 runs × depth 100 — 25,600 handler calls
+attester's `attestationsToday` ever exceeding `maxAttestationsPerDay`,
+and the registry's ETH balance always equalling the outstanding
+dispute bonds (bonded disputes are exercised by the fuzz handler,
+which funds every actor and mirrors each posted bond).
+Baseline: 13 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 6,811,812 gas, 31,046 bytes runtime).
+per-function gas (deploy 6,820,591 gas, 33,155 bytes runtime).
 
 ### Run it
 

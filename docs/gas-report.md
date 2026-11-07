@@ -10,7 +10,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/DisputeEscalation.t.sol`, `test/BatchReads.t.sol`,
 `test/LeaderboardOptOut.t.sol`, `test/TopAttesters.t.sol`,
 `test/DecayConfig.t.sol`, `test/ReputationBadges.t.sol`, and
-`test/AttesterRateLimit.t.sol`.
+`test/AttesterRateLimit.t.sol`, and
+`test/DisputeBond.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -19,8 +20,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 6,811,812 gas |
-| Runtime size | 31,046 bytes |
+| Deployment cost | 6,820,591 gas |
+| Runtime size | 33,155 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -206,6 +207,20 @@ never touch the counter, so their cost is unchanged.
 line with `setExpiryDuration`), and `attestationsToday` is a pure
 view (~2.8k gas).
 
+Dispute bonds added ~9k gas to deployment (+2,109 bytes): the
+`disputeBond` slot, the `_disputeBond` mapping, the `setDisputeBond` /
+`disputeBondOf` pair plus their events, the `_settleDisputeBond`
+helper, and the minimal `_locked` reentrancy guard. A bonded dispute
+costs more than a free one — `disputeAttestation` now writes the bond
+slot and `resolveDispute`/`expireDispute` pay the transfer plus the
+slot clear on top of the snapshot (averages ~134k/~99k in these
+tests, up from ~127k/~67k).
+`setDisputeBond` is a single-slot update (~41k gas avg — the first
+write in the test run is cold, hence above the ~29k of the other
+single-slot setters), and `disputeBondOf` is a pure view (~4.6k gas).
+The bond itself is the dominant cost of the feature for users: it is
+real ETH escrowed per dispute, not gas.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -234,12 +249,14 @@ view (~2.8k gas).
 | `transferOwnership` | 23,879 | 38,275 | 47,898 | 47,898 | 11 |
 | `acceptOwnership` | 23,455 | 26,676 | 25,876 | 33,098 | 6 |
 | `cancelOwnershipTransfer` | 23,517 | 24,898 | 25,525 | 25,652 | 3 |
-| `disputeAttestation` | 26,178 | 112,460 | 102,642 | 245,994 | 21 |
-| `revokeAttestation` | 23,678 | 89,316 | 80,473 | 272,153 | 15 |
-| `resolveDispute` | 26,275 | 127,249 | 140,289 | 238,172 | 12 |
-| `expireDispute` | 26,070 | 66,570 | 30,443 | 142,124 | 6 |
+| `disputeAttestation` | 31,370 | 148,199 | 149,530 | 253,026 | 66 |
+| `revokeAttestation` | 28,873 | 127,987 | 83,546 | 274,892 | 39 |
+| `resolveDispute` | 31,403 | 134,242 | 146,210 | 243,097 | 24 |
+| `expireDispute` | 31,178 | 99,045 | 147,112 | 156,410 | 9 |
 | `escalateDispute` | 23,700 | 35,265 | 37,722 | 37,722 | 25 |
-| `resolveDisputeAsOwner` | 23,910 | 87,403 | 85,530 | 149,668 | 12 |
+| `resolveDisputeAsOwner` | 26,987 | 96,670 | 118,473 | 156,634 | 14 |
+| `setDisputeBond` | 23,820 | 40,950 | 46,974 | 46,974 | 17 |
+| `disputeBondOf` (view) | 2,544 | 4,550 | 4,733 | 4,733 | 12 |
 | `isDisputeEscalated` (view) | 2,457 | 4,347 | 4,820 | 4,820 | 5 |
 | `getScore` (view) | 3,307 | 18,616 | 16,507 | 30,384 | 48 |
 | `getScoreByCategory` (view) | 23,352 | 24,996 | 24,747 | 26,163 | 5 |
