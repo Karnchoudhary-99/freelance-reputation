@@ -66,10 +66,27 @@ contract ReputationHandler is Test {
     // and enables a bond in setUp.
     mapping(uint256 => uint256) public bondOf;
     uint256 public outstandingBonds;
+    // Category-weight mirror, per category index (0 == Overall).
+    // Starts at the default for every category, like the registry.
+    mapping(uint256 => uint256) public categoryWeights;
+    // Sequence numbers for the snapshot invariant: a category-weight
+    // retune moves the live overall score without appending a
+    // snapshot, so the invariant must skip the overall scope when a
+    // retune happened after its last attestation change. `seq`
+    // orders handler actions; per-scope numbers record the last
+    // attestation change, `lastWeightChangeSeq` the last retune.
+    uint256 public seq;
+    uint256 public lastWeightChangeSeq;
+    mapping(address => uint256) public lastOverallChangeSeq;
+    mapping(address => mapping(uint256 => uint256))
+        public lastCategoryChangeSeq;
 
     constructor(address[] memory _actors) {
         registry = new ReputationRegistry();
         actors = _actors;
+        for (uint256 c = 0; c < 5; c++) {
+            categoryWeights[c] = registry.DEFAULT_CATEGORY_WEIGHT();
+        }
     }
 
     function _key(
@@ -258,6 +275,9 @@ contract ReputationHandler is Test {
     ) internal {
         lastOverallChangeAt[subject] = block.timestamp;
         lastCategoryChangeAt[subject][uint256(category)] = block.timestamp;
+        seq++;
+        lastOverallChangeSeq[subject] = seq;
+        lastCategoryChangeSeq[subject][uint256(category)] = seq;
     }
 
     /// @notice Whether a record is expired right now: its last update
@@ -288,6 +308,25 @@ contract ReputationHandler is Test {
     function setBond(uint256 bond) external {
         if (bond > registry.MAX_DISPUTE_BOND()) return;
         registry.setDisputeBond(bond);
+    }
+
+    /// @notice Retune one category's weight in the overall score,
+    ///         mirrored so the weights invariant can check it. The
+    ///         handler is the registry owner, so this always succeeds.
+    ///         Biased toward the default (100) and toward 0, so the
+    ///         fuzz exercises both the equal blend and full exclusion
+    ///         regularly instead of only random weights.
+    function setCategoryWeight(uint256 seed) external {
+        ReputationRegistry.Category category = ReputationRegistry.Category(
+            seed % 5
+        );
+        uint256 weight = seed % 1001;
+        if (seed % 4 == 0) weight = registry.DEFAULT_CATEGORY_WEIGHT();
+        if (seed % 7 == 0) weight = 0;
+        registry.setCategoryWeight(category, weight);
+        categoryWeights[uint256(category)] = weight;
+        seq++;
+        lastWeightChangeSeq = seq;
     }
 
     /// @notice Strike one actor: their next attestations weigh less,
@@ -402,6 +441,9 @@ contract ReputationInvariants is Test {
                     block.timestamp >=
                     uint256(recs[j].updatedAt) + duration
                 ) continue;
+                // Zero-weight categories drop out of the overall
+                // score entirely, count included.
+                if (registry.categoryWeight(recs[j].category) == 0) continue;
                 active++;
             }
             assertEq(registry.getScore(actors[i]).count, active);
@@ -412,6 +454,14 @@ contract ReputationInvariants is Test {
         for (uint256 i = 0; i < actors.length; i++) {
             uint256 sum;
             for (uint256 c = 0; c < 5; c++) {
+                // Zero-weight categories drop out of the overall
+                // score, count included, so only weighted categories
+                // sum to it.
+                if (
+                    registry.categoryWeight(
+                        ReputationRegistry.Category(c)
+                    ) == 0
+                ) continue;
                 sum += registry
                     .getScoreByCategory(
                         actors[i],
@@ -439,8 +489,18 @@ contract ReputationInvariants is Test {
                     block.timestamp >=
                     uint256(recs[j].updatedAt) + duration
                 ) continue;
+                // Zero-weight categories drop out of the overall
+                // score entirely, so they contribute nothing here.
+                if (registry.categoryWeight(recs[j].category) == 0) {
+                    continue;
+                }
+                // The overall score weights each record by its
+                // category too (per-category scores never are — this
+                // invariant recomputes the overall scope only).
                 uint256 eff = uint256(recs[j].weight) *
-                    registry.decayFactorBps(recs[j].updatedAt);
+                    registry.decayFactorBps(recs[j].updatedAt) *
+                    registry.categoryWeight(recs[j].category) /
+                    registry.DEFAULT_CATEGORY_WEIGHT();
                 weightedSum += uint256(recs[j].score) * eff;
                 effective += eff;
                 total += recs[j].weight;
@@ -527,7 +587,13 @@ contract ReputationInvariants is Test {
     ///         tracks the last mutation timestamp per subject and per
     ///         subject + category, so this invariant checks exactly the
     ///         scopes where the two must agree, overall + all four
-    ///         categories.
+    ///         categories. One more drift is by design: a category-weight
+    ///         retune moves the live OVERALL score without appending a
+    ///         snapshot, so the overall scope is skipped when a retune
+    ///         happened after its last attestation change (the handler
+    ///         orders actions with sequence numbers for exactly this).
+    ///         Per-category snapshots never drift on a retune — those
+    ///         scores are never weighted.
     function invariant_latest_snapshot_matches_live_score() public view {
         for (uint256 i = 0; i < actors.length; i++) {
             for (uint256 c = 0; c < 5; c++) {
@@ -535,6 +601,11 @@ contract ReputationInvariants is Test {
                     ? handler.lastOverallChangeAt(actors[i])
                     : handler.lastCategoryChangeAt(actors[i], c);
                 if (block.timestamp != lastChange) continue;
+                if (
+                    c == 0 &&
+                    handler.lastWeightChangeSeq() >
+                    handler.lastOverallChangeSeq(actors[i])
+                ) continue;
                 ReputationRegistry.Category category = ReputationRegistry
                     .Category(c);
                 uint256 len = registry.scoreHistoryLength(
@@ -635,6 +706,70 @@ contract ReputationInvariants is Test {
         uint256 created = handler.created();
         for (uint256 id = 0; id < created; id++) {
             assertEq(registry.disputeBondOf(id), handler.bondOf(id));
+        }
+    }
+
+    /// @notice The handler's category-weight mirror matches the
+    ///         registry exactly, and every weight stays in the
+    ///         owner-settable range (0 to the 1000 cap). A retune
+    ///         that wrote a different weight — or a weight above the
+    ///         cap — would break this on the next invariant check.
+    function invariant_category_weights_mirror_matches() public view {
+        for (uint256 c = 0; c < 5; c++) {
+            uint256 weight = registry.categoryWeight(
+                ReputationRegistry.Category(c)
+            );
+            assertEq(weight, handler.categoryWeights(c));
+            assertLe(weight, registry.MAX_CATEGORY_WEIGHT());
+        }
+        uint256[5] memory all = registry.categoryWeights();
+        for (uint256 c = 0; c < 5; c++) {
+            assertEq(
+                all[c],
+                registry.categoryWeight(ReputationRegistry.Category(c))
+            );
+        }
+    }
+
+    /// @notice The overall average is a weighted mean of the active
+    ///         attestations' scores, so it can never fall outside
+    ///         their range: at least the lowest active score, at most
+    ///         the highest. Category weights, decay, and snapshot
+    ///         weights only move the blend inside that range — a
+    ///         weight that leaked into the average itself (or a
+    ///         division slip) would break this.
+    function invariant_overall_average_within_active_score_range()
+        public
+        view
+    {
+        uint64 duration = registry.expiryDuration();
+        for (uint256 i = 0; i < actors.length; i++) {
+            ReputationRegistry.Attestation[] memory recs = registry
+                .getAttestations(actors[i]);
+            uint256 minScore = 100;
+            uint256 maxScore;
+            uint256 count;
+            for (uint256 j = 0; j < recs.length; j++) {
+                if (recs[j].revoked || recs[j].disputed) continue;
+                if (
+                    duration > 0 &&
+                    block.timestamp >=
+                    uint256(recs[j].updatedAt) + duration
+                ) continue;
+                // Zero-weight categories drop out of the overall
+                // score entirely, so the range is over the records
+                // that actually count toward it.
+                if (registry.categoryWeight(recs[j].category) == 0) {
+                    continue;
+                }
+                if (recs[j].score < minScore) minScore = recs[j].score;
+                if (recs[j].score > maxScore) maxScore = recs[j].score;
+                count++;
+            }
+            if (count == 0) continue;
+            uint256 average = registry.getScore(actors[i]).average;
+            assertGe(average, minScore * 100);
+            assertLe(average, maxScore * 100);
         }
     }
 }
