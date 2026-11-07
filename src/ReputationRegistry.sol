@@ -1271,7 +1271,7 @@ contract ReputationRegistry {
         Attestation storage a = _attestations[id];
         if (a.subject != msg.sender) revert NotSubject();
         if (!a.disputed) revert NotDisputed();
-        if (block.timestamp < uint256(a.disputedAt) + DISPUTE_WINDOW) {
+        if (block.timestamp < uint256(a.disputedAt) + disputeWindow) {
             revert DisputeNotExpired();
         }
         a.disputed = false;
@@ -1285,11 +1285,11 @@ contract ReputationRegistry {
 
     /// @notice Escalate an unanswered dispute to the registry owner for
     ///         arbitration. Only the subject may escalate, only once the
-    ///         attester has had ESCALATION_DELAY (7 days) to answer, and
+    ///         attester has had `escalationDelay` to answer, and
     ///         only while the dispute is still open. Escalation changes
     ///         no score — the record stays excluded — it only opens the
     ///         owner-arbitration path, so an unresponsive attester cannot
-    ///         stall a dispute for the full 30-day window. Like the other
+    ///         stall a dispute for the full dispute window. Like the other
     ///         dispute exits, escalation stays open while paused.
     function escalateDispute(uint256 id) external {
         if (id >= _attestations.length) revert UnknownAttestation();
@@ -1297,7 +1297,7 @@ contract ReputationRegistry {
         if (a.subject != msg.sender) revert NotSubject();
         if (!a.disputed) revert NotDisputed();
         if (a.escalated) revert AlreadyEscalated();
-        if (block.timestamp < uint256(a.disputedAt) + ESCALATION_DELAY) {
+        if (block.timestamp < uint256(a.disputedAt) + escalationDelay) {
             revert EscalationTooEarly();
         }
         a.escalated = true;
