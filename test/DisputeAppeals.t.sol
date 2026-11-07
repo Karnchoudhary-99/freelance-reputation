@@ -343,6 +343,22 @@ contract DisputeAppealsTest is Test {
         assertEq(count, 2);
     }
 
+    function testDisputeWhileAppealedReverts() public {
+        uint256 id = _upheldId();
+        vm.prank(alice);
+        registry.appealDispute(id);
+
+        vm.prank(alice);
+        vm.expectRevert(ReputationRegistry.AlreadyAppealed.selector);
+        registry.disputeAttestation(id, bytes32("again"));
+
+        // Once the appeal is arbitrated, disputing works again.
+        registry.resolveAppeal(id, true);
+        vm.prank(alice);
+        registry.disputeAttestation(id, bytes32("again"));
+        assertTrue(registry.attestation(id).disputed);
+    }
+
     function testReattestWhileAppealedReverts() public {
         uint256 id = _upheldId();
         vm.prank(alice);

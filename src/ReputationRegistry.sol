@@ -1168,6 +1168,10 @@ contract ReputationRegistry {
         if (a.subject != msg.sender) revert NotSubject();
         if (a.revoked) revert AlreadyRevoked();
         if (a.disputed) revert AlreadyDisputed();
+        // An appealed record is under arbitration, like a disputed
+        // one: the subject must wait for the owner to rule before
+        // opening a fresh dispute over it.
+        if (a.appealed) revert AlreadyAppealed();
         if (_isExpiredAt(a, uint64(block.timestamp))) {
             revert AttestationExpired();
         }
