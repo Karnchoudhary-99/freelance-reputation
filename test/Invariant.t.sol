@@ -6,9 +6,10 @@ import {ReputationRegistry} from "../src/ReputationRegistry.sol";
 
 /// @notice Fuzz handler driving the registry through attest / revoke /
 ///         dispute / resolve / expire / escalate / owner-arbitrate /
-///         appeal / appeal-arbitrate cycles plus time warps, with owner
-///         strikes and strike-clearing mixed in, and pauses / unpauses
-///         so the fuzz runs exercise the frozen state too.
+///         appeal / appeal-arbitrate / request / fulfil / cancel
+///         cycles plus time warps, with owner strikes and
+///         strike-clearing mixed in, and pauses / unpauses so the
+///         fuzz runs exercise the frozen state too.
 ///         Attestations are sometimes routed through an active
 ///         delegate (set / revoked by the handler), so the delegate
 ///         paths get the same lifecycle coverage as direct attests.
@@ -46,6 +47,24 @@ contract ReputationHandler is Test {
     mapping(uint256 => bool) public appealed;
     mapping(uint256 => uint64) public resolvedAt;
     mapping(uint256 => bool) public appealUsed;
+    // Attestation-request mirror: every request ever created, in
+    // creation order, plus per-request subject / attester / category
+    // / expiry / open flag / status / fulfilled-attestation id. The
+    // open-key mirror (id + 1, 0 == none open) enforces the
+    // one-open-request rule in requestAttestation() so a fuzz call
+    // never hits RequestAlreadyOpen. An expired open request stays
+    // "open" in the mirror — the guards check expiry against the
+    // live clock, like the contract does.
+    uint256[] public requestIds;
+    mapping(uint256 => address) public requestSubject;
+    mapping(uint256 => address) public requestAttester;
+    mapping(uint256 => ReputationRegistry.Category) public requestCategory;
+    mapping(uint256 => uint64) public requestExpiresAt;
+    mapping(uint256 => bool) public requestOpen;
+    mapping(uint256 => ReputationRegistry.RequestStatus)
+        public requestStatus;
+    mapping(uint256 => uint256) public requestAttestationId;
+    mapping(bytes32 => uint256) public openRequestByKey;
     mapping(uint256 => address) public recordAttester;
     mapping(uint256 => address) public recordSubject;
     mapping(uint256 => ReputationRegistry.Category) public recordCategory;
@@ -347,6 +366,135 @@ contract ReputationHandler is Test {
                 _key(recordAttester[id], recordSubject[id], recordCategory[id])
             ] = 0;
         }
+    }
+
+    /// @notice Key for the one-open-request-per-ask rule, mirroring
+    ///         `ReputationRegistry._requestKey` (which is internal).
+    function _requestKey(
+        address subject,
+        address attester,
+        ReputationRegistry.Category category
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(subject, attester, category));
+    }
+
+    /// @notice Whether a mirrored request is dead by time: still open
+    ///         in the mirror, but past its expiry.
+    function _isRequestExpired(uint256 id) internal view returns (bool) {
+        return
+            requestOpen[id] &&
+            requestExpiresAt[id] <= block.timestamp;
+    }
+
+    /// @notice Ask an attester for a rating: one open request per
+    ///         (subject, attester, category). A paused registry takes
+    ///         no new requests, and an unexpired open request for the
+    ///         same triple blocks a second ask — an expired one does
+    ///         not, so the call goes through and takes its place.
+    function requestAttestation(uint256 seed) external {
+        address subject = actors[seed % actors.length];
+        // Subject is always a different actor, so self-requests never fire.
+        address attester = actors[(seed / actors.length + 1) % actors.length];
+        if (attester == subject) return;
+        if (paused) return;
+        ReputationRegistry.Category category = ReputationRegistry.Category(
+            (seed / 36) % 5
+        );
+        bytes32 key = _requestKey(subject, attester, category);
+        uint256 existing = openRequestByKey[key];
+        if (existing != 0 && !_isRequestExpired(existing - 1)) return;
+        vm.prank(subject);
+        uint256 id = registry.requestAttestation(
+            attester,
+            category,
+            bytes32(seed)
+        );
+        requestIds.push(id);
+        requestSubject[id] = subject;
+        requestAttester[id] = attester;
+        requestCategory[id] = category;
+        requestExpiresAt[id] =
+            uint64(block.timestamp) +
+            registry.requestValidity();
+        requestOpen[id] = true;
+        requestStatus[id] = ReputationRegistry.RequestStatus.Open;
+        openRequestByKey[key] = id + 1;
+    }
+
+    /// @notice Answer an open request with a rating: the attester
+    ///         fulfils it, creating (or updating) the attestation and
+    ///         linking the two records. Guarded like attest(): a
+    ///         suspended attester cannot answer, a paused registry
+    ///         takes no fulfilments, verified-only mode verifies the
+    ///         attester first, a disputed or appealed existing record
+    ///         blocks the update, and a fresh record that would bust
+    ///         the daily quota is skipped.
+    function fulfillRequest(uint256 seed) external {
+        if (requestIds.length == 0) return;
+        uint256 id = requestIds[seed % requestIds.length];
+        if (!requestOpen[id] || _isRequestExpired(id)) return;
+        address attester = requestAttester[id];
+        address subject = requestSubject[id];
+        ReputationRegistry.Category category = requestCategory[id];
+        if (strikes[attester] >= registry.MAX_STRIKES()) return;
+        if (paused) return;
+        if (verifiedOnly && !verified[attester]) {
+            registry.setVerifiedAttester(attester, true);
+            verified[attester] = true;
+        }
+        bytes32 key = _key(attester, subject, category);
+        uint256 existing = activeByKey[key];
+        if (existing != 0 && disputed[existing - 1]) return;
+        if (existing != 0 && appealed[existing - 1]) return;
+        // A fresh record consumes daily quota; an update does not.
+        if (
+            existing == 0 &&
+            registry.maxAttestationsPerDay() > 0 &&
+            registry.attestationsToday(attester) >=
+            registry.maxAttestationsPerDay()
+        ) return;
+        uint8 score = uint8(seed % 101);
+        vm.prank(attester);
+        uint256 attestationId = registry.fulfillAttestationRequest(
+            id,
+            score,
+            bytes32(seed)
+        );
+        _touch(subject, category);
+        requestOpen[id] = false;
+        requestStatus[id] = ReputationRegistry.RequestStatus.Fulfilled;
+        requestAttestationId[id] = attestationId;
+        bytes32 reqKey = _requestKey(subject, attester, category);
+        if (openRequestByKey[reqKey] == id + 1) {
+            openRequestByKey[reqKey] = 0;
+        }
+        if (existing == 0) {
+            recordAttester[attestationId] = attester;
+            recordSubject[attestationId] = subject;
+            recordCategory[attestationId] = category;
+            activeByKey[key] = attestationId + 1;
+            created++;
+            createdFor[subject]++;
+        }
+    }
+
+    /// @notice Withdraw one of your own open requests. Only the
+    ///         subject may cancel, and only while the request is
+    ///         still open and unexpired.
+    function cancelRequest(uint256 seed) external {
+        if (requestIds.length == 0) return;
+        uint256 id = requestIds[seed % requestIds.length];
+        if (!requestOpen[id] || _isRequestExpired(id)) return;
+        vm.prank(requestSubject[id]);
+        registry.cancelAttestationRequest(id);
+        requestOpen[id] = false;
+        requestStatus[id] = ReputationRegistry.RequestStatus.Cancelled;
+        bytes32 key = _requestKey(
+            requestSubject[id],
+            requestAttester[id],
+            requestCategory[id]
+        );
+        if (openRequestByKey[key] == id + 1) openRequestByKey[key] = 0;
     }
 
     function _touch(
@@ -963,6 +1111,77 @@ contract ReputationInvariants is Test {
                 registry.isVerifiedAttester(actors[i]),
                 handler.verified(actors[i])
             );
+        }
+    }
+
+    /// @notice Attestation requests mirror the handler, and every
+    ///         fulfilled request links to a matching attestation:
+    ///         the record it names carries the same attester, subject
+    ///         and category and flags itself as from a request, and
+    ///         the record's own link points back at a fulfilled
+    ///         request for the same triple (the latest one, when the
+    ///         same ask was requested and fulfilled twice — the
+    ///         record is updated in place, so its link moves to the
+    ///         newest request). An open, unexpired request is always
+    ///         findable through `openRequestId` for its triple.
+    function invariant_fulfilled_requests_link_to_attestations()
+        public
+        view
+    {
+        uint256 count = registry.attestationRequestCount();
+        for (uint256 i = 0; i < count; i++) {
+            ReputationRegistry.AttestationRequest memory req = registry
+                .attestationRequest(i);
+            assertEq(req.subject, handler.requestSubject(i));
+            assertEq(req.attester, handler.requestAttester(i));
+            assertEq(
+                uint256(req.category),
+                uint256(handler.requestCategory(i))
+            );
+            assertEq(req.expiresAt, handler.requestExpiresAt(i));
+            assertEq(
+                uint256(req.status),
+                uint256(handler.requestStatus(i))
+            );
+            assertEq(req.attestationId, handler.requestAttestationId(i));
+            if (
+                req.status ==
+                ReputationRegistry.RequestStatus.Fulfilled
+            ) {
+                ReputationRegistry.Attestation memory a = registry
+                    .attestation(req.attestationId);
+                assertTrue(a.fromRequest);
+                assertEq(a.attester, req.attester);
+                assertEq(a.subject, req.subject);
+                assertEq(uint256(a.category), uint256(req.category));
+                ReputationRegistry.AttestationRequest
+                    memory linked = registry.attestationRequest(
+                        a.requestId
+                    );
+                assertEq(
+                    uint256(linked.status),
+                    uint256(ReputationRegistry.RequestStatus.Fulfilled)
+                );
+                assertEq(linked.attester, req.attester);
+                assertEq(linked.subject, req.subject);
+                assertEq(
+                    uint256(linked.category),
+                    uint256(req.category)
+                );
+                assertEq(linked.attestationId, req.attestationId);
+            }
+            if (
+                req.status == ReputationRegistry.RequestStatus.Open &&
+                block.timestamp < uint256(req.expiresAt)
+            ) {
+                (bool exists, uint256 found) = registry.openRequestId(
+                    req.subject,
+                    req.attester,
+                    req.category
+                );
+                assertTrue(exists);
+                assertEq(found, i);
+            }
         }
     }
 }
