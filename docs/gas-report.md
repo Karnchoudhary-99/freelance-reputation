@@ -13,7 +13,7 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/AttesterRateLimit.t.sol`, and
 `test/DisputeBond.t.sol`, `test/CategoryWeights.t.sol`, and
 `test/DisputeAppeals.t.sol`, and `test/GovernanceWindows.t.sol`, and
-`test/VerifiedOnly.t.sol`.
+`test/VerifiedOnly.t.sol`, and `test/LeaderboardAt.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -22,8 +22,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 8,401,307 gas |
-| Runtime size | 37,232 bytes |
+| Deployment cost | 8,462,572 gas |
+| Runtime size | 37,515 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -274,6 +274,18 @@ handler now toggles the mode mid-run (verifying attesters on the
 fly), and an 18th invariant mirrors the mode and the verified
 flags.
 
+Time-windowed leaderboards added ~61k gas to deployment (+283
+bytes): the `_rankedLeaderboardAt` time parameterization plus the
+`getLeaderboardAt` / `getLeaderboardByCategoryAt` views. A preview
+board costs about the same as the live board on the same subject
+set — the scans are identical, only the decay reference time
+changes (one extra `createdAt <= when` check per record, as in the
+score previews): in the leaderboard suite `getLeaderboardAt`
+averages ~148k gas and `getLeaderboard` ~163k gas on the same
+three-subject board, and the category preview ~186k gas, in line
+with the live category board's double scan. Same conclusion as the
+other boards: views for off-chain reads, not transaction inputs.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -335,7 +347,9 @@ flags.
 | `getBadgesAt` (view) | 3,700 | 45,544 | 53,584 | 79,349 | 3 |
 | `getBadgesFor` (view) | 873 | 98,225 | 4,568 | 289,235 | 3 |
 | `getLeaderboard` (view) | 3,134 | 38,865 | 40,049 | 60,143 | 13 |
+| `getLeaderboardAt` (view) | 93,747 | 147,661 | 152,548 | 167,723 | 16 |
 | `getLeaderboardByCategory` (view) | 37,573 | 71,266 | 70,875 | 128,670 | 6 |
+| `getLeaderboardByCategoryAt` (view) | 167,900 | 186,342 | 172,824 | 218,302 | 3 |
 
 ## Score history cost
 
