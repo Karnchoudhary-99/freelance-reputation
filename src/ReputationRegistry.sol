@@ -23,7 +23,8 @@ pragma solidity 0.8.24;
 ///      from the same decayed average. A subject may dispute an attestation
 ///      they believe is unfair; disputed attestations are excluded from
 ///      scores until the attester upholds them, concedes (revokes), or the
-///      30-day dispute window lapses and the subject reinstates them.
+///      dispute window (30 days by default, owner-configurable) lapses
+///      and the subject reinstates them.
 ///      The overall score blends every category, but not necessarily
 ///      equally: the owner may weight categories (see
 ///      `setCategoryWeight`), so a registry for, say, safety-critical
@@ -34,12 +35,14 @@ pragma solidity 0.8.24;
 ///      are never weighted — a category's own average is always the
 ///      plain blend of its attestations — and a retune re-weights the
 ///      live overall score at once without rewriting any record.
-///      If the attester ignores a dispute for 7 days, the subject may
+///      If the attester ignores a dispute for the escalation delay
+///      (7 days by default, owner-configurable), the subject may
 ///      escalate it to the registry owner, who arbitrates it — upholding
 ///      or conceding on the attester's behalf — so an unresponsive
-///      attester cannot stall a dispute for the full 30 days. And if a
-///      dispute is resolved by upholding the attestation, the subject
-///      gets one appeal within 7 days: the record stays excluded from
+///      attester cannot stall a dispute for the full dispute window.
+///      And if a dispute is resolved by upholding the attestation, the
+///      subject gets one appeal within the appeal window (7 days by
+///      default, owner-configurable): the record stays excluded from
 ///      scores until the owner arbitrates the appeal, so neither party
 ///      judges their own case.
 ///      Attestations expire: after `expiryDuration` (730 days by
@@ -245,6 +248,7 @@ contract ReputationRegistry {
     error AttestationExpired();
     error AttesterSuspended();
     error InvalidDecayPeriods();
+    error InvalidGovernanceWindow();
     error InvalidProofValidity();
     error NoScoreProof();
     error NotDelegate();
@@ -332,6 +336,9 @@ contract ReputationRegistry {
     event StrikesCleared(address indexed attester);
     event ExpiryDurationUpdated(uint64 expiryDuration);
     event DecayPeriodsUpdated(uint256 fullPeriod, uint256 halfPeriod);
+    event DisputeWindowUpdated(uint256 disputeWindow);
+    event EscalationDelayUpdated(uint256 escalationDelay);
+    event AppealWindowUpdated(uint256 appealWindow);
     event ScoreProofIssued(
         address indexed subject,
         uint256 average,
@@ -406,21 +413,51 @@ contract ReputationRegistry {
 
     /// @notice How long an attester has to answer a dispute before the
     ///         subject may reinstate the attestation unilaterally.
-    uint256 public constant DISPUTE_WINDOW = 30 days;
+    ///         The deploy-time default (see `disputeWindow`): 30 days.
+    uint256 public constant DEFAULT_DISPUTE_WINDOW = 30 days;
 
     /// @notice How long a dispute must sit unanswered before the subject
     ///         may escalate it to the owner for arbitration: long enough
     ///         that the attester had a fair chance to answer, short
     ///         enough that a stalled dispute does not hang for the full
-    ///         30-day window.
-    uint256 public constant ESCALATION_DELAY = 7 days;
+    ///         dispute window. The deploy-time default (see
+    ///         `escalationDelay`): 7 days.
+    uint256 public constant DEFAULT_ESCALATION_DELAY = 7 days;
 
     /// @notice How long a subject has to appeal an upheld dispute
     ///         resolution: a week is long enough to notice the outcome
     ///         and file, short enough that an upheld attestation does
     ///         not hang in limbo indefinitely — after the window the
+    ///         resolution is final and the record counts again. The
+    ///         deploy-time default (see `appealWindow`): 7 days.
+    uint256 public constant DEFAULT_APPEAL_WINDOW = 7 days;
+
+    /// @notice Current dispute window: how long an attester has to
+    ///         answer a dispute before the subject may reinstate the
+    ///         attestation unilaterally (see `expireDispute`). Starts
+    ///         at the documented default; the owner may retune it
+    ///         (see `setDisputeWindow`). Shortening it lets subjects
+    ///         reclaim disputed attestations sooner; lengthening it
+    ///         gives attesters more time to answer. It must always
+    ///         stay longer than `escalationDelay`, so escalation can
+    ///         still fire before the window lapses.
+    uint256 public disputeWindow = DEFAULT_DISPUTE_WINDOW;
+
+    /// @notice Current escalation delay: how long a dispute must sit
+    ///         unanswered before the subject may escalate it to the
+    ///         owner (see `escalateDispute`). Starts at the documented
+    ///         default; the owner may retune it (see
+    ///         `setEscalationDelay`). It must always stay shorter than
+    ///         `disputeWindow`, so a dispute can be escalated before
+    ///         it expires.
+    uint256 public escalationDelay = DEFAULT_ESCALATION_DELAY;
+
+    /// @notice Current appeal window: how long a subject has to appeal
+    ///         an upheld dispute resolution (see `appealDispute`).
+    ///         Starts at the documented default; the owner may retune
+    ///         it (see `setAppealWindow`). After the window the
     ///         resolution is final and the record counts again.
-    uint256 public constant APPEAL_WINDOW = 7 days;
+    uint256 public appealWindow = DEFAULT_APPEAL_WINDOW;
 
     /// @notice Longest a score proof may stay valid: a certificate must
     ///         be re-issued regularly, so a stale reputation cannot be
@@ -1237,7 +1274,7 @@ contract ReputationRegistry {
         Attestation storage a = _attestations[id];
         if (a.subject != msg.sender) revert NotSubject();
         if (!a.disputed) revert NotDisputed();
-        if (block.timestamp < uint256(a.disputedAt) + DISPUTE_WINDOW) {
+        if (block.timestamp < uint256(a.disputedAt) + disputeWindow) {
             revert DisputeNotExpired();
         }
         a.disputed = false;
@@ -1251,11 +1288,11 @@ contract ReputationRegistry {
 
     /// @notice Escalate an unanswered dispute to the registry owner for
     ///         arbitration. Only the subject may escalate, only once the
-    ///         attester has had ESCALATION_DELAY (7 days) to answer, and
+    ///         attester has had `escalationDelay` to answer, and
     ///         only while the dispute is still open. Escalation changes
     ///         no score — the record stays excluded — it only opens the
     ///         owner-arbitration path, so an unresponsive attester cannot
-    ///         stall a dispute for the full 30-day window. Like the other
+    ///         stall a dispute for the full dispute window. Like the other
     ///         dispute exits, escalation stays open while paused.
     function escalateDispute(uint256 id) external {
         if (id >= _attestations.length) revert UnknownAttestation();
@@ -1263,7 +1300,7 @@ contract ReputationRegistry {
         if (a.subject != msg.sender) revert NotSubject();
         if (!a.disputed) revert NotDisputed();
         if (a.escalated) revert AlreadyEscalated();
-        if (block.timestamp < uint256(a.disputedAt) + ESCALATION_DELAY) {
+        if (block.timestamp < uint256(a.disputedAt) + escalationDelay) {
             revert EscalationTooEarly();
         }
         a.escalated = true;
@@ -1323,7 +1360,7 @@ contract ReputationRegistry {
 
     /// @notice Appeal an upheld dispute resolution. Only the subject may
     ///         appeal, only once per dispute outcome, and only within
-    ///         APPEAL_WINDOW (7 days) of the resolution — after that the
+    ///         `appealWindow` of the resolution — after that the
     ///         resolution is final. The appeal re-excludes the
     ///         attestation from every score until the owner arbitrates
     ///         it: an attester who "won" a dispute does not get the
@@ -1344,7 +1381,7 @@ contract ReputationRegistry {
         if (a.disputed) revert AlreadyDisputed();
         if (a.appealed) revert AlreadyAppealed();
         if (a.appealUsed || a.resolvedAt == 0) revert NotAppealable();
-        if (block.timestamp > uint256(a.resolvedAt) + APPEAL_WINDOW) {
+        if (block.timestamp > uint256(a.resolvedAt) + appealWindow) {
             revert AppealWindowExpired();
         }
         if (_isExpiredAt(a, uint64(block.timestamp))) {
@@ -1396,13 +1433,13 @@ contract ReputationRegistry {
     }
 
     /// @notice Last moment the subject may appeal the upheld resolution
-    ///         on an attestation (resolution time + APPEAL_WINDOW).
+    ///         on an attestation (resolution time + `appealWindow`).
     ///         Returns 0 when no appeal is available.
     function appealDeadline(uint256 id) external view returns (uint64) {
         if (id >= _attestations.length) revert UnknownAttestation();
         uint64 resolvedAt = _attestations[id].resolvedAt;
         if (resolvedAt == 0) return 0;
-        return resolvedAt + uint64(APPEAL_WINDOW);
+        return resolvedAt + uint64(appealWindow);
     }
 
     /// @notice Weighted average score across all active attestations.
@@ -2388,6 +2425,64 @@ contract ReputationRegistry {
         decayFullPeriod = fullPeriod;
         decayHalfPeriod = halfPeriod;
         emit DecayPeriodsUpdated(fullPeriod, halfPeriod);
+    }
+
+    /// @notice Retune the dispute window: how long an attester has to
+    ///         answer a dispute before the subject may reinstate the
+    ///         attestation unilaterally. Only the owner may call this.
+    ///         The new window applies to every open dispute from its
+    ///         own `disputedAt` — shortening it can let a subject
+    ///         expire a dispute at once, lengthening it gives the
+    ///         attester more time. Bounds: at least 1 day (shorter
+    ///         would give the attester no real chance to answer), at
+    ///         most 365 days, and always longer than `escalationDelay`
+    ///         so escalation can still fire before the window lapses.
+    function setDisputeWindow(uint256 window) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (
+            window < 1 days ||
+            window > 365 days ||
+            window <= escalationDelay
+        ) revert InvalidGovernanceWindow();
+        disputeWindow = window;
+        emit DisputeWindowUpdated(window);
+    }
+
+    /// @notice Retune the escalation delay: how long a dispute must sit
+    ///         unanswered before the subject may escalate it to the
+    ///         owner. Only the owner may call this. The new delay
+    ///         applies to every open dispute from its own `disputedAt`
+    ///         — shortening it can make a stalled dispute escalatable
+    ///         at once. Bounds: at least 1 hour (the attester deserves
+    ///         a real chance to answer), at most 30 days, and always
+    ///         shorter than `disputeWindow` so a dispute can be
+    ///         escalated before it expires.
+    function setEscalationDelay(uint256 delay) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (
+            delay < 1 hours ||
+            delay > 30 days ||
+            delay >= disputeWindow
+        ) revert InvalidGovernanceWindow();
+        escalationDelay = delay;
+        emit EscalationDelayUpdated(delay);
+    }
+
+    /// @notice Retune the appeal window: how long a subject has to
+    ///         appeal an upheld dispute resolution. Only the owner may
+    ///         call this. The new window applies to every upheld
+    ///         resolution from its own `resolvedAt` — shortening it
+    ///         can close an open appeal window at once, lengthening
+    ///         it reopens one that had lapsed. Bounds: at least 1 day
+    ///         (a shorter window would give the subject no real chance
+    ///         to notice the outcome), at most 90 days.
+    function setAppealWindow(uint256 window) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (window < 1 days || window > 90 days) {
+            revert InvalidGovernanceWindow();
+        }
+        appealWindow = window;
+        emit AppealWindowUpdated(window);
     }
 
     /// @notice Change the daily fresh-attestation limit per attester.

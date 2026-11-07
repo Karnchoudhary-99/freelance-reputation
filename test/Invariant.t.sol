@@ -236,7 +236,7 @@ contract ReputationHandler is Test {
         if (created == 0) return;
         uint256 id = seed % created;
         if (revoked[id] || !disputed[id]) return;
-        if (block.timestamp < uint256(disputedAt[id]) + registry.DISPUTE_WINDOW()) {
+        if (block.timestamp < uint256(disputedAt[id]) + registry.disputeWindow()) {
             return;
         }
         vm.prank(recordSubject[id]);
@@ -249,7 +249,7 @@ contract ReputationHandler is Test {
     }
 
     /// @notice Escalate a dispute the attester ignored for at least
-    ///         ESCALATION_DELAY. No-op until the delay has passed, and
+    ///         `escalationDelay`. No-op until the delay has passed, and
     ///         never on a settled or already-escalated record. The
     ///         escalation changes no score, so no snapshot is touched.
     function escalate(uint256 seed) external {
@@ -258,7 +258,7 @@ contract ReputationHandler is Test {
         if (revoked[id] || !disputed[id] || escalated[id]) return;
         if (
             block.timestamp <
-            uint256(disputedAt[id]) + registry.ESCALATION_DELAY()
+            uint256(disputedAt[id]) + registry.escalationDelay()
         ) return;
         vm.prank(recordSubject[id]);
         registry.escalateDispute(id);
@@ -292,7 +292,7 @@ contract ReputationHandler is Test {
     }
 
     /// @notice Appeal an upheld resolution: subject-only, once per
-    ///         outcome, within APPEAL_WINDOW of the resolution, and
+    ///         outcome, within `appealWindow` of the resolution, and
     ///         never on an expired record. Posts the current bond,
     ///         mirrored so the bond-balance invariant stays exact.
     ///         Appeals record a snapshot, so the scope is touched.
@@ -303,7 +303,7 @@ contract ReputationHandler is Test {
         if (appealUsed[id] || resolvedAt[id] == 0) return;
         if (
             block.timestamp >
-            uint256(resolvedAt[id]) + registry.APPEAL_WINDOW()
+            uint256(resolvedAt[id]) + registry.appealWindow()
         ) return;
         if (_isExpired(id)) return;
         uint256 bond = registry.disputeBond();
@@ -375,6 +375,26 @@ contract ReputationHandler is Test {
     function setBond(uint256 bond) external {
         if (bond > registry.MAX_DISPUTE_BOND()) return;
         registry.setDisputeBond(bond);
+    }
+
+    /// @notice Retune all three governance windows. The ordering rule
+    ///         (escalation delay always shorter than the dispute
+    ///         window) forces a sequence: open the window to its
+    ///         ceiling first, then set the delay, then the window —
+    ///         every step stays inside its bounds, so a fuzz call can
+    ///         never revert. The dispute / escalation / appeal mirrors
+    ///         read the live values, so a retune mid-run keeps them
+    ///         exact.
+    function setGovernanceWindows(uint256 seed) external {
+        uint256 delay = 1 hours + (seed % (30 days - 1 hours + 1));
+        uint256 window = delay +
+            1 days +
+            ((seed / 1000) % (365 days - delay - 1 days + 1));
+        uint256 appeal = 1 days + ((seed / 1000000) % (90 days - 1 days + 1));
+        registry.setDisputeWindow(365 days);
+        registry.setEscalationDelay(delay);
+        registry.setDisputeWindow(window);
+        registry.setAppealWindow(appeal);
     }
 
     /// @notice Retune one category's weight in the overall score,
@@ -840,7 +860,7 @@ contract ReputationInvariants is Test {
                 registry.appealDeadline(id),
                 a.resolvedAt == 0
                     ? 0
-                    : a.resolvedAt + uint64(registry.APPEAL_WINDOW())
+                    : a.resolvedAt + uint64(registry.appealWindow())
             );
         }
     }
@@ -887,5 +907,23 @@ contract ReputationInvariants is Test {
             assertGe(average, minScore * 100);
             assertLe(average, maxScore * 100);
         }
+    }
+
+    /// @notice The governance windows always stay inside the bounds
+    ///         their setters enforce, and the escalation delay always
+    ///         stays shorter than the dispute window — a retune that
+    ///         broke the ordering would make escalation unreachable
+    ///         before a dispute expires.
+    function invariant_governance_windows_in_bounds_and_ordered()
+        public
+        view
+    {
+        assertGe(registry.disputeWindow(), 1 days);
+        assertLe(registry.disputeWindow(), 365 days);
+        assertGe(registry.escalationDelay(), 1 hours);
+        assertLe(registry.escalationDelay(), 30 days);
+        assertLt(registry.escalationDelay(), registry.disputeWindow());
+        assertGe(registry.appealWindow(), 1 days);
+        assertLe(registry.appealWindow(), 90 days);
     }
 }

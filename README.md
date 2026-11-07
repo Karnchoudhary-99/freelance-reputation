@@ -31,6 +31,7 @@ that travel with the worker, not the platform.
 - [x] Dispute bonds (opt-in ETH stake on disputes, attester keeps it on uphold, subject refunded otherwise)
 - [x] Category weights (owner-configurable per-category weights for the overall score)
 - [x] Dispute appeals (one appeal per upheld resolution, 7-day window, owner arbitrates)
+- [x] Configurable governance windows (dispute window, escalation delay, appeal window — owner-retunable, apply live)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -157,14 +158,16 @@ A freelancer who believes an attestation is unfair can challenge it:
 - `resolveDispute(id, uphold)` — only the attester. Upholding clears the
   dispute and refreshes the decay clock (a re-confirmation); conceding
   revokes the attestation, so the attester may attest again later.
-- `expireDispute(id)` — only the subject, only after 30 days unanswered.
-  This stops an attester from suppressing a score forever by ignoring the
-  dispute. Expiry reinstates the attestation as-is — it does not refresh
-  the decay clock.
+- `expireDispute(id)` — only the subject, only after the dispute window
+  (30 days by default) unanswered. This stops an attester from
+  suppressing a score forever by ignoring the dispute. Expiry
+  reinstates the attestation as-is — it does not refresh the decay
+  clock.
 - `escalateDispute(id)` — only the subject, only once the dispute has sat
-  unanswered for 7 days. Escalation changes no score — the record stays
-  excluded — it only opens the owner-arbitration path, so an unresponsive
-  attester cannot stall a dispute for the full 30 days.
+  unanswered for the escalation delay (7 days by default). Escalation
+  changes no score — the record stays excluded — it only opens the
+  owner-arbitration path, so an unresponsive attester cannot stall a
+  dispute for the full dispute window.
 - `resolveDisputeAsOwner(id, uphold)` — only the registry owner, only on
   an escalated dispute. Same outcome as the attester resolving it:
   upholding re-confirms the attestation (decay clock refreshed),
@@ -181,7 +184,8 @@ A freelancer who believes an attestation is unfair can challenge it:
 A dispute resolution is not the last word — the subject gets one appeal:
 
 - `appealDispute(id)` — only the subject, only once per dispute outcome,
-  and only within 7 days (`APPEAL_WINDOW`) of an upheld resolution.
+  and only within the appeal window (7 days by default) of an upheld
+  resolution.
   The appeal re-excludes the attestation from every score until the
   owner arbitrates it: an attester who "won" a dispute does not get
   the score back while the subject's last word is pending. A conceded
@@ -205,6 +209,34 @@ A dispute resolution is not the last word — the subject gets one appeal:
   fresh `attest` call either; the score under arbitration is frozen
   until the owner rules. Appeals and their arbitration stay open
   while the registry is paused, like every other dispute exit.
+
+### Governance windows
+
+The three dispute clocks are owner-configurable, so a registry can
+match its own dispute culture instead of living with fixed delays:
+
+- `setDisputeWindow(window)` — 1 day to 365 days (default 30 days).
+  How long an attester has to answer before the subject may reinstate
+  the attestation with `expireDispute`.
+- `setEscalationDelay(delay)` — 1 hour to 30 days (default 7 days).
+  How long a dispute must sit unanswered before the subject may
+  escalate it to the owner.
+- `setAppealWindow(window)` — 1 day to 90 days (default 7 days). How
+  long a subject has to appeal an upheld resolution.
+- The escalation delay must always stay shorter than the dispute
+  window, so a dispute can be escalated before it expires — the
+  setters enforce it (to shorten the window below the current delay,
+  lower the delay first).
+- A retune applies live, from each record's own timestamp: shortening
+  the dispute window can make an open dispute expirable at once, and
+  lengthening the appeal window can reopen an appeal that had just
+  lapsed. `appealDeadline(id)` follows the live window. No record is
+  ever rewritten by a retune.
+- `disputeWindow()`, `escalationDelay()`, `appealWindow()` report the
+  live values; `DEFAULT_DISPUTE_WINDOW`, `DEFAULT_ESCALATION_DELAY`,
+  `DEFAULT_APPEAL_WINDOW` keep the deploy-time defaults. The fuzz
+  suite retunes all three mid-run and checks they stay in bounds and
+  ordered.
 
 ### Dispute bonds
 
