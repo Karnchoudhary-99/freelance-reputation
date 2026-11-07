@@ -2344,6 +2344,21 @@ contract ReputationRegistry {
         emit AttesterVerified(attester, verified);
     }
 
+    /// @notice Switch verified-only mode on or off. Only the owner
+    ///         may call this. When on, only verified attesters may
+    ///         attest — the registry becomes allowlist-only, which is
+    ///         what a registry that has been spammed (or one that
+    ///         only ever wants KYC'd clients attesting) needs. When
+    ///         off again, any attester may file, exactly as before.
+    ///         The switch never touches existing records or scores:
+    ///         it gates new writes only, and an attester verified
+    ///         while the mode is on may attest at once.
+    function setVerifiedOnly(bool enabled) external {
+        if (msg.sender != owner) revert NotOwner();
+        verifiedOnly = enabled;
+        emit VerifiedOnlyUpdated(enabled);
+    }
+
     /// @notice Strike a misbehaving attester — fake endorsements, spam,
     ///         paid reviews. Only the owner may call this. Each strike
     ///         lowers the weight of the attester's next attestations by
