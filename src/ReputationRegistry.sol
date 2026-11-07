@@ -2736,6 +2736,114 @@ contract ReputationRegistry {
         return _attestations.length;
     }
 
+    /// @notice One request by id — any status, including expired,
+    ///         fulfilled, and cancelled: the history of what was asked.
+    function attestationRequest(
+        uint256 id
+    ) external view returns (AttestationRequest memory) {
+        if (id >= _attestationRequests.length) {
+            revert UnknownAttestationRequest();
+        }
+        return _attestationRequests[id];
+    }
+
+    /// @notice How many requests have ever been created (all statuses).
+    function attestationRequestCount() external view returns (uint256) {
+        return _attestationRequests.length;
+    }
+
+    /// @notice The open request for one (subject, attester, category)
+    ///         ask, or 0 when there is none — or when the open one has
+    ///         expired. This is the id a frontend shows as "pending"
+    ///         for that ask, and the id the attester fulfils.
+    function openRequestId(
+        address subject,
+        address attester,
+        Category category
+    ) external view returns (uint256) {
+        uint256 found = _openRequestByKey[
+            _requestKey(subject, attester, category)
+        ];
+        if (found == 0) return 0;
+        AttestationRequest storage req = _attestationRequests[found - 1];
+        if (_isRequestExpired(req)) return 0;
+        return found - 1;
+    }
+
+    /// @notice Whether a request is dead by time (see
+    ///         `_isRequestExpired`). A request that already ended —
+    ///         fulfilled or cancelled — is never "expired".
+    function isRequestExpired(uint256 id) external view returns (bool) {
+        if (id >= _attestationRequests.length) {
+            revert UnknownAttestationRequest();
+        }
+        return _isRequestExpired(_attestationRequests[id]);
+    }
+
+    /// @notice One page of an attester's still-open requests, in
+    ///         creation order (oldest first) — the inbox a client
+    ///         works through. Fulfilled, cancelled, and expired
+    ///         requests are excluded; an offset past the end returns
+    ///         an empty page. This is a view over the attester's full
+    ///         request history, so it scans every request addressed
+    ///         to them even when the page is small; frontends should
+    ///         call it off-chain via `eth_call`.
+    function getOpenRequestsForAttester(
+        address attester,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (AttestationRequest[] memory) {
+        return _openRequestsPage(_attesterRequests[attester], offset, limit);
+    }
+
+    /// @notice One page of a subject's still-open requests, in
+    ///         creation order — the asks a freelancer is waiting on.
+    ///         Same filtering and paging semantics as
+    ///         `getOpenRequestsForAttester`.
+    function getOpenRequestsBySubject(
+        address subject,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (AttestationRequest[] memory) {
+        return _openRequestsPage(_subjectRequests[subject], offset, limit);
+    }
+
+    /// @notice Shared page builder for the open-request reads: count
+    ///         the still-open requests in `ids`, then copy the page
+    ///         starting at `offset`. Expired open requests are skipped
+    ///         everywhere, so a page never contains a dead ask.
+    function _openRequestsPage(
+        uint256[] storage ids,
+        uint256 offset,
+        uint256 limit
+    ) internal view returns (AttestationRequest[] memory) {
+        uint256 total;
+        for (uint256 i = 0; i < ids.length; i++) {
+            AttestationRequest storage req = _attestationRequests[ids[i]];
+            if (
+                req.status == RequestStatus.Open &&
+                !_isRequestExpired(req)
+            ) total++;
+        }
+        if (offset >= total) return new AttestationRequest[](0);
+        uint256 remaining = total - offset;
+        uint256 count = limit < remaining ? limit : remaining;
+        AttestationRequest[] memory out = new AttestationRequest[](count);
+        uint256 seen;
+        uint256 written;
+        for (uint256 i = 0; i < ids.length && written < count; i++) {
+            AttestationRequest storage req = _attestationRequests[ids[i]];
+            if (
+                req.status != RequestStatus.Open || _isRequestExpired(req)
+            ) continue;
+            if (seen >= offset) {
+                out[written++] = req;
+            }
+            seen++;
+        }
+        return out;
+    }
+
     /// @notice Decay factor (basis points) for an attestation last updated
     ///         at `timestamp`, measured against the current block time.
     function decayFactorBps(uint64 timestamp) public view returns (uint256) {
