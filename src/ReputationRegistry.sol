@@ -56,6 +56,10 @@ pragma solidity 0.8.24;
 ///      attestation carries +1 snapshot weight, capped at 3, so
 ///      established clients count a little more. Verification is a
 ///      snapshot-time boost only — it never rewrites existing records.
+///      The owner may also switch the registry to verified-only
+///      mode, so only verified attesters can attest at all — the
+///      allowlist a registry needs after a spam wave, or from the
+///      start when only KYC'd clients should ever file.
 ///      The owner may also strike a misbehaving attester (fake
 ///      endorsements, spam, paid reviews): each strike lowers the
 ///      weight of the attester's next attestations by 1, floored at 1,
@@ -1069,6 +1073,15 @@ contract ReputationRegistry {
         if (subject == attester) revert SelfAttestation();
         if (score > MAX_SCORE) revert InvalidScore();
         if (_strikes[attester] >= MAX_STRIKES) revert AttesterSuspended();
+        // Verified-only mode gates every attestation path — direct,
+        // batch, signed, delegated — and re-attests too: an
+        // unverified attester cannot create or update a record while
+        // it is on. The check sits in `_attest` so no entry point
+        // can bypass it, and it reads the live flag, so verifying
+        // an attester unblocks them at once.
+        if (verifiedOnly && !_verifiedAttesters[attester]) {
+            revert NotVerifiedAttester();
+        }
 
         uint8 weight = attesterWeight(attester);
         bytes32 key = _key(attester, subject, category);
