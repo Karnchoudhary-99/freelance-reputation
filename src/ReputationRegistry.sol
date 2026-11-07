@@ -2753,21 +2753,24 @@ contract ReputationRegistry {
     }
 
     /// @notice The open request for one (subject, attester, category)
-    ///         ask, or 0 when there is none — or when the open one has
-    ///         expired. This is the id a frontend shows as "pending"
-    ///         for that ask, and the id the attester fulfils.
+    ///         ask: `exists` is false when there is none — or when the
+    ///         open one has expired — and `id` is the request to
+    ///         fulfil. The flag exists because request id 0 is a real
+    ///         request: a bare id could not tell "request 0" from "no
+    ///         request". This is the id a frontend shows as "pending"
+    ///         for that ask.
     function openRequestId(
         address subject,
         address attester,
         Category category
-    ) external view returns (uint256) {
+    ) external view returns (bool exists, uint256 id) {
         uint256 found = _openRequestByKey[
             _requestKey(subject, attester, category)
         ];
-        if (found == 0) return 0;
+        if (found == 0) return (false, 0);
         AttestationRequest storage req = _attestationRequests[found - 1];
-        if (_isRequestExpired(req)) return 0;
-        return found - 1;
+        if (_isRequestExpired(req)) return (false, 0);
+        return (true, found - 1);
     }
 
     /// @notice Whether a request is dead by time (see
