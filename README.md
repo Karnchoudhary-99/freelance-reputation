@@ -57,6 +57,11 @@ read the resulting score.
   weight, and decay-adjusted effective weight (in basis points).
   `getAttestations(subject)` returns all records, revoked and disputed
   included (check the flags to tell them apart).
+- **Category weights.** The overall score blends every category, but the
+  owner may weight them: `setCategoryWeight(category, weight)` (owner-only,
+  0–1000, default 100) counts a category more or less in the overall score
+  — 200 is double, 0 drops the category from the overall score entirely.
+  Per-category scores are never weighted. See [Category weights](#category-weights).
 
 ### Score decay
 
@@ -86,6 +91,33 @@ full period and at most 10 years. A retune re-weights every existing
 record from its own last update — shortening the full period can drop
 live scores immediately, lengthening it can revive decayed weight —
 but no record is ever rewritten.
+
+### Category weights
+
+Not every dimension of good work matters equally to every registry. A
+platform for safety-critical work may care about Reliability twice as much
+as Timeliness; a marketplace for quick gigs may care most about Timeliness
+itself. The overall score blends every category, but the owner can weight
+the blend:
+
+- `setCategoryWeight(category, weight)` — owner-only — sets one category's
+  weight relative to the default 100: 200 counts it twice as much, 1000
+  (the cap) ten times as much, 0 drops it from the overall score entirely.
+  Emits `CategoryWeightUpdated`. Every category starts at 100, so a fresh
+  registry blends all categories equally, exactly as before.
+- `categoryWeight(category)` / `categoryWeights()` — the current weight of
+  one category, or all five in enum order (Overall, Quality,
+  Communication, Timeliness, Reliability).
+- A retune re-weights the live overall score at once — tiers, badges,
+  leaderboards, score history, and the decay-preview views all follow it —
+  without rewriting any record, the same way a decay retune does. A weight
+  of 0 does not delete anything: the category's attestations still count
+  toward its own per-category score, which is never weighted, and a later
+  retune back above 0 revives them in the overall score immediately.
+- The overall score stays a weighted mean of the active attestations'
+  scores, so it can never leave the range between the lowest and highest
+  active score — the fuzz suite checks exactly that (see [Invariant fuzz
+  tests](#invariant-fuzz-tests)).
 
 ### Attestation expiry
 
@@ -449,7 +481,12 @@ excluded (average 0 when it was the only one), and an upheld dispute
 or an expiry appends one with the score restored. History grows by
 one entry per state change, so page it on busy subjects — and note
 that snapshots cost gas on every write (see `docs/gas-report.md`):
-reputation-over-time is a feature, not a free lunch.
+reputation-over-time is a feature, not a free lunch. One more
+divergence is by design: a category-weight retune moves the live
+overall score without appending a snapshot (the retune is a config
+change, not a change to the subject), so the frozen history lags the
+live score until the next state change touches that subject — the
+same way decay ages a live score between changes.
 
 ### Score preview
 
@@ -630,8 +667,10 @@ dispute / resolve / expire / escalate / owner-arbitrate cycles plus time warps (
 and 365-day decay tiers and the 30-day dispute window) and owner strikes
 / strike-clearing, plus pause / unpause cycles and delegate set / revoke
 cycles (about half the attestations are routed through an active
-delegate when the attester has one), with a guarded handler, so every handler call is
-expected to succeed and a revert can never mask a broken invariant. Thirteen
+delegate when the attester has one), plus owner category-weight retunes
+(biased toward the default 100 and toward 0, so the fuzz exercises both
+the equal blend and full exclusion), with a guarded handler, so every handler call is
+expected to succeed and a revert can never mask a broken invariant. Fifteen
 invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
@@ -649,15 +688,19 @@ registry with an escalated record always still disputed, and no
 attester's `attestationsToday` ever exceeding `maxAttestationsPerDay`,
 and the registry's ETH balance always equalling the outstanding
 dispute bonds (bonded disputes are exercised by the fuzz handler,
-which funds every actor and mirrors each posted bond).
-Baseline: 13 invariants × 256 runs × depth 100 — 25,600 handler calls
+which funds every actor and mirrors each posted bond), and the
+category-weight mirror matching the registry with every weight in the
+0–1000 range, and the overall average always lying between the lowest
+and highest active attestation score (a weighted mean can never leave
+that range, whatever the weights, decay, or snapshot weights do).
+Baseline: 15 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 6,820,591 gas, 33,155 bytes runtime).
+per-function gas (deploy 7,111,268 gas, 34,052 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 245 tests (234 unit + 11 invariants)
+forge test          # 324 tests (309 unit + 15 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 
