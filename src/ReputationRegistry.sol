@@ -23,7 +23,8 @@ pragma solidity 0.8.24;
 ///      from the same decayed average. A subject may dispute an attestation
 ///      they believe is unfair; disputed attestations are excluded from
 ///      scores until the attester upholds them, concedes (revokes), or the
-///      30-day dispute window lapses and the subject reinstates them.
+///      dispute window (30 days by default, owner-configurable) lapses
+///      and the subject reinstates them.
 ///      The overall score blends every category, but not necessarily
 ///      equally: the owner may weight categories (see
 ///      `setCategoryWeight`), so a registry for, say, safety-critical
@@ -34,12 +35,14 @@ pragma solidity 0.8.24;
 ///      are never weighted — a category's own average is always the
 ///      plain blend of its attestations — and a retune re-weights the
 ///      live overall score at once without rewriting any record.
-///      If the attester ignores a dispute for 7 days, the subject may
+///      If the attester ignores a dispute for the escalation delay
+///      (7 days by default, owner-configurable), the subject may
 ///      escalate it to the registry owner, who arbitrates it — upholding
 ///      or conceding on the attester's behalf — so an unresponsive
-///      attester cannot stall a dispute for the full 30 days. And if a
-///      dispute is resolved by upholding the attestation, the subject
-///      gets one appeal within 7 days: the record stays excluded from
+///      attester cannot stall a dispute for the full dispute window.
+///      And if a dispute is resolved by upholding the attestation, the
+///      subject gets one appeal within the appeal window (7 days by
+///      default, owner-configurable): the record stays excluded from
 ///      scores until the owner arbitrates the appeal, so neither party
 ///      judges their own case.
 ///      Attestations expire: after `expiryDuration` (730 days by
@@ -1357,7 +1360,7 @@ contract ReputationRegistry {
 
     /// @notice Appeal an upheld dispute resolution. Only the subject may
     ///         appeal, only once per dispute outcome, and only within
-    ///         APPEAL_WINDOW (7 days) of the resolution — after that the
+    ///         `appealWindow` of the resolution — after that the
     ///         resolution is final. The appeal re-excludes the
     ///         attestation from every score until the owner arbitrates
     ///         it: an attester who "won" a dispute does not get the
@@ -1378,7 +1381,7 @@ contract ReputationRegistry {
         if (a.disputed) revert AlreadyDisputed();
         if (a.appealed) revert AlreadyAppealed();
         if (a.appealUsed || a.resolvedAt == 0) revert NotAppealable();
-        if (block.timestamp > uint256(a.resolvedAt) + APPEAL_WINDOW) {
+        if (block.timestamp > uint256(a.resolvedAt) + appealWindow) {
             revert AppealWindowExpired();
         }
         if (_isExpiredAt(a, uint64(block.timestamp))) {
@@ -1430,13 +1433,13 @@ contract ReputationRegistry {
     }
 
     /// @notice Last moment the subject may appeal the upheld resolution
-    ///         on an attestation (resolution time + APPEAL_WINDOW).
+    ///         on an attestation (resolution time + `appealWindow`).
     ///         Returns 0 when no appeal is available.
     function appealDeadline(uint256 id) external view returns (uint64) {
         if (id >= _attestations.length) revert UnknownAttestation();
         uint64 resolvedAt = _attestations[id].resolvedAt;
         if (resolvedAt == 0) return 0;
-        return resolvedAt + uint64(APPEAL_WINDOW);
+        return resolvedAt + uint64(appealWindow);
     }
 
     /// @notice Weighted average score across all active attestations.
