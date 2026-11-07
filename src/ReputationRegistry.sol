@@ -2240,6 +2240,20 @@ contract ReputationRegistry {
         return _rankedLeaderboard(category, filterCategory, limit);
     }
 
+    /// @notice The category board as it stood (or will stand) at time
+    ///         `when` — the \"best communicators last quarter\" view.
+    ///         Same ranking and preview semantics as
+    ///         `getLeaderboardAt`, category-scoped; passing
+    ///         `Category.Overall` returns exactly `getLeaderboardAt`.
+    function getLeaderboardByCategoryAt(
+        Category category,
+        uint64 when,
+        uint256 limit
+    ) external view returns (LeaderboardEntry[] memory) {
+        bool filterCategory = category != Category.Overall;
+        return _rankedLeaderboardAt(category, filterCategory, limit, when);
+    }
+
     /// @notice Opt yourself out of — or back into — public discovery:
     ///         the leaderboards and the tier directory. Only the subject
     ///         themself may call this (the caller IS the subject), so no
