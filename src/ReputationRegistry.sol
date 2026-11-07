@@ -2508,6 +2508,13 @@ contract ReputationRegistry {
             if (a.createdAt > when) continue;
             if (_isExpiredAt(a, when)) continue;
             if (filterCategory && a.category != category) continue;
+            // A category weighted 0 drops out of the overall score
+            // entirely — its records are not counted there at all
+            // (count, average, weights). Per-category scores are
+            // never weighted, so this never applies to them.
+            if (!filterCategory && _categoryWeights[a.category] == 0) {
+                continue;
+            }
             // Fixed-point decay: multiply before dividing so a weight-1
             // attestation at quarter weight still counts (2500 bps), instead
             // of truncating to zero. For the overall score the
