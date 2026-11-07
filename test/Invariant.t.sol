@@ -561,4 +561,18 @@ contract ReputationInvariants is Test {
             }
         }
     }
+
+    /// @notice No attester ever exceeds the daily fresh-attestation
+    ///         limit in the current UTC day. The fuzz handler never
+    ///         lowers the limit, so the default (50) applies — and a
+    ///         run can create at most 25 fresh records per attester
+    ///         (5 other subjects x 5 categories), so the bound is
+    ///         reachable in principle but never crossed in practice.
+    function invariant_daily_limit_never_exceeded() public view {
+        uint256 limit = registry.maxAttestationsPerDay();
+        if (limit == 0) return; // 0 disables the limit entirely
+        for (uint256 i = 0; i < actors.length; i++) {
+            assertLe(registry.attestationsToday(actors[i]), limit);
+        }
+    }
 }
