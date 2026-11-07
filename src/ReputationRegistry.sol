@@ -1043,13 +1043,14 @@ contract ReputationRegistry {
     /// @notice Revoke your own attestation. The record stays readable but no
     ///         longer counts toward the subject's score, and you may attest
     ///         again afterwards (it creates a fresh record).
-    function revokeAttestation(uint256 id) external {
+    function revokeAttestation(uint256 id) external nonReentrant {
         if (id >= _attestations.length) revert UnknownAttestation();
         Attestation storage a = _attestations[id];
         if (a.attester != msg.sender) revert NotAttester();
         if (a.revoked) revert AlreadyRevoked();
         a.revoked = true;
         // Revoking also settles any open dispute on this record.
+        bool wasDisputed = a.disputed;
         a.disputed = false;
         a.disputeReason = bytes32(0);
         a.disputedAt = 0;
@@ -1057,6 +1058,9 @@ contract ReputationRegistry {
         _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         emit AttestationRevoked(id, msg.sender, a.subject);
         _recordSnapshot(a.subject, a.category);
+        // A revoked dispute is a dispute the subject did not lose:
+        // the bond goes back to the subject.
+        if (wasDisputed) _settleDisputeBond(id, a.subject);
     }
 
     /// @notice Dispute an attestation about you. Only the subject may
@@ -1066,7 +1070,16 @@ contract ReputationRegistry {
     ///         counts toward no score, so there is nothing to dispute —
     ///         if the attester re-attests and revives it, the fresh
     ///         record can be disputed like any other.
-    function disputeAttestation(uint256 id, bytes32 reasonHash) external {
+    ///         When the owner has set a dispute bond (see
+    ///         `setDisputeBond`), disputing stakes exactly that much
+    ///         ETH: it is the attester's when the dispute is upheld and
+    ///         refunded to you when it is conceded, expires, or the
+    ///         attestation is revoked while disputed. Sending any other
+    ///         amount reverts, and a 0 bond means disputes are free.
+    function disputeAttestation(
+        uint256 id,
+        bytes32 reasonHash
+    ) external payable nonReentrant {
         if (id >= _attestations.length) revert UnknownAttestation();
         Attestation storage a = _attestations[id];
         if (a.subject != msg.sender) revert NotSubject();
@@ -1075,6 +1088,8 @@ contract ReputationRegistry {
         if (_isExpiredAt(a, uint64(block.timestamp))) {
             revert AttestationExpired();
         }
+        if (msg.value != disputeBond) revert IncorrectDisputeBond();
+        _disputeBond[id] = msg.value;
         a.disputed = true;
         a.disputeReason = reasonHash;
         a.disputedAt = uint64(block.timestamp);
@@ -1085,8 +1100,10 @@ contract ReputationRegistry {
     /// @notice Resolve a dispute over your attestation. Upholding clears the
     ///         dispute (and refreshes the decay clock: the attestation is
     ///         re-confirmed); conceding revokes the attestation, freeing the
-    ///         subject to be re-attested later.
-    function resolveDispute(uint256 id, bool uphold) external {
+    ///         subject to be re-attested later. The dispute bond, if one
+    ///         was posted, goes to you when you uphold and back to the
+    ///         subject when you concede.
+    function resolveDispute(uint256 id, bool uphold) external nonReentrant {
         if (id >= _attestations.length) revert UnknownAttestation();
         Attestation storage a = _attestations[id];
         if (a.attester != msg.sender) revert NotAttester();
@@ -1107,14 +1124,17 @@ contract ReputationRegistry {
         }
         emit DisputeResolved(id, a.attester, a.subject, uphold);
         _recordSnapshot(a.subject, a.category);
+        _settleDisputeBond(id, uphold ? a.attester : a.subject);
     }
 
     /// @notice Reinstate an attestation whose dispute went unanswered for the
     ///         full dispute window. Only the subject may call this: it stops
     ///         an attester from suppressing a score forever by ignoring the
     ///         dispute. The decay clock is NOT refreshed — expiry is not a
-    ///         re-confirmation.
-    function expireDispute(uint256 id) external {
+    ///         re-confirmation. The dispute bond, if one was posted, is
+    ///         refunded to the subject: an unanswered dispute is not a
+    ///         dispute the subject lost.
+    function expireDispute(uint256 id) external nonReentrant {
         if (id >= _attestations.length) revert UnknownAttestation();
         Attestation storage a = _attestations[id];
         if (a.subject != msg.sender) revert NotSubject();
@@ -1128,6 +1148,7 @@ contract ReputationRegistry {
         a.escalated = false;
         emit DisputeExpired(id, a.attester, a.subject);
         _recordSnapshot(a.subject, a.category);
+        _settleDisputeBond(id, a.subject);
     }
 
     /// @notice Escalate an unanswered dispute to the registry owner for
@@ -1159,8 +1180,13 @@ contract ReputationRegistry {
     ///         The attester may still resolve the dispute themselves
     ///         after escalation — whichever resolution lands first
     ///         settles it. Owner arbitration stays open while paused,
-    ///         like every other dispute exit.
-    function resolveDisputeAsOwner(uint256 id, bool uphold) external {
+    ///         like every other dispute exit. The bond settles the same
+    ///         way as an attester resolution: to the attester on uphold,
+    ///         back to the subject on concede.
+    function resolveDisputeAsOwner(
+        uint256 id,
+        bool uphold
+    ) external nonReentrant {
         if (msg.sender != owner) revert NotOwner();
         if (id >= _attestations.length) revert UnknownAttestation();
         Attestation storage a = _attestations[id];
@@ -1182,6 +1208,7 @@ contract ReputationRegistry {
         }
         emit DisputeResolvedByOwner(id, a.attester, a.subject, uphold);
         _recordSnapshot(a.subject, a.category);
+        _settleDisputeBond(id, uphold ? a.attester : a.subject);
     }
 
     /// @notice Whether the open dispute on an attestation has been
