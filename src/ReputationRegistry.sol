@@ -1023,8 +1023,11 @@ contract ReputationRegistry {
             id = existing - 1;
             Attestation storage a = _attestations[id];
             // A disputed attestation cannot be quietly overwritten by the
-            // attester; it must go through resolveDispute first.
+            // attester; it must go through resolveDispute first. An
+            // appealed one is under arbitration for the same reason:
+            // the attester must not change the score mid-appeal.
             if (a.disputed) revert AlreadyDisputed();
+            if (a.appealed) revert AlreadyAppealed();
             a.score = score;
             a.weight = weight;
             a.commentHash = commentHash;
