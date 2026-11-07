@@ -2205,6 +2205,25 @@ contract ReputationRegistry {
         return _rankedLeaderboard(Category.Overall, false, limit);
     }
 
+    /// @notice The leaderboard as it stood (or will stand) at time
+    ///         `when` — the board behind \"who was on top last
+    ///         quarter\" or \"who leads if nothing changes for a year\".
+    ///         Ranks subjects by their decay-preview score at `when`
+    ///         (see `_scoreAt`): attestations created after `when`
+    ///         are excluded, decay is measured against `when`, and
+    ///         `tier` is the subject's overall tier at `when` (see
+    ///         `tierOfAt`). Same exclusion, tie-break, and limit rules
+    ///         as `getLeaderboard`, and the same preview caveat:
+    ///         revoked / disputed / appealed flags are read as they
+    ///         stand now, so a record revoked after `when` is already
+    ///         excluded from the board at `when`.
+    function getLeaderboardAt(
+        uint64 when,
+        uint256 limit
+    ) external view returns (LeaderboardEntry[] memory) {
+        return _rankedLeaderboardAt(Category.Overall, false, limit, when);
+    }
+
     /// @notice Top subjects by one category's average — the "best
     ///         communicators" board, as opposed to the overall board.
     ///         Passing `Category.Overall` returns exactly `getLeaderboard`:
@@ -2219,6 +2238,20 @@ contract ReputationRegistry {
     ) external view returns (LeaderboardEntry[] memory) {
         bool filterCategory = category != Category.Overall;
         return _rankedLeaderboard(category, filterCategory, limit);
+    }
+
+    /// @notice The category board as it stood (or will stand) at time
+    ///         `when` — the \"best communicators last quarter\" view.
+    ///         Same ranking and preview semantics as
+    ///         `getLeaderboardAt`, category-scoped; passing
+    ///         `Category.Overall` returns exactly `getLeaderboardAt`.
+    function getLeaderboardByCategoryAt(
+        Category category,
+        uint64 when,
+        uint256 limit
+    ) external view returns (LeaderboardEntry[] memory) {
+        bool filterCategory = category != Category.Overall;
+        return _rankedLeaderboardAt(category, filterCategory, limit, when);
     }
 
     /// @notice Opt yourself out of — or back into — public discovery:
@@ -2246,11 +2279,34 @@ contract ReputationRegistry {
     ///         `getLeaderboardByCategory`: score every subject, drop the
     ///         ones with no active attestations in scope, sort descending
     ///         by average then count (stable, so first-seen order breaks
-    ///         remaining ties), and clamp to `limit`.
+    ///         remaining ties), and clamp to `limit`. Scores are read at
+    ///         the current block time — see `_rankedLeaderboardAt` for
+    ///         the time-parameterized version.
     function _rankedLeaderboard(
         Category category,
         bool filterCategory,
         uint256 limit
+    ) internal view returns (LeaderboardEntry[] memory) {
+        return
+            _rankedLeaderboardAt(
+                category,
+                filterCategory,
+                limit,
+                uint64(block.timestamp)
+            );
+    }
+
+    /// @notice The ranking at time `when`: the same board, but every
+    ///         score is the decay preview at `when` (see `_scoreAt`),
+    ///         so a board can be rebuilt for any past or future
+    ///         moment. Opt-outs are read as they stand now — a subject
+    ///         who opted out is hidden from every board, past or
+    ///         future, exactly like on the live board.
+    function _rankedLeaderboardAt(
+        Category category,
+        bool filterCategory,
+        uint256 limit,
+        uint64 when
     ) internal view returns (LeaderboardEntry[] memory) {
         LeaderboardEntry[] memory ranked = new LeaderboardEntry[](
             _subjects.length
@@ -2261,21 +2317,24 @@ contract ReputationRegistry {
             // with active attestations — privacy is a listing rule,
             // not a score rule.
             if (_leaderboardOptOut[_subjects[i]]) continue;
-            Score memory s = _score(
+            Score memory s = _scoreAt(
                 _subjectAttestations[_subjects[i]],
                 category,
-                filterCategory
+                filterCategory,
+                when
             );
             if (s.count == 0) continue;
-            // The tier is always the subject's OVERALL tier, even on a
-            // category board: a category average must not promote someone
-            // to Elite on the strength of one category alone.
+            // The tier is always the subject's OVERALL tier at `when`,
+            // even on a category board: a category average must not
+            // promote someone to Elite on the strength of one category
+            // alone.
             Tier tier = filterCategory
                 ? _tierOf(
-                    _score(
+                    _scoreAt(
                         _subjectAttestations[_subjects[i]],
                         Category.Overall,
-                        false
+                        false,
+                        when
                     )
                 )
                 : _tierOf(s);

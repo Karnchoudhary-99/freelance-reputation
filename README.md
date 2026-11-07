@@ -33,6 +33,7 @@ that travel with the worker, not the platform.
 - [x] Dispute appeals (one appeal per upheld resolution, 7-day window, owner arbitrates)
 - [x] Configurable governance windows (dispute window, escalation delay, appeal window — owner-retunable, apply live)
 - [x] Verified-only mode (owner toggle: only verified attesters may attest, every path)
+- [x] Time-windowed leaderboards (leaderboard as of any past/future time, category boards)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -501,6 +502,19 @@ clamps to the ranked set (0 returns an empty array). `subjectCount()`
 reports how many distinct subjects have ever received an attestation.
 The view scans the whole subject set, so keep `limit` small on a busy
 registry.
+
+`getLeaderboardAt(when, limit)` rebuilds the same board for any past
+or future moment: subjects ranked by their decay-preview score at
+`when` (see the score-preview views), so a ranking can flip as old
+endorsements decay, and `tier` is the subject's overall tier at
+`when`. `getLeaderboardByCategoryAt(category, when, limit)` does the
+same for a category board. The same preview caveat applies as to the
+score views: attestations created after `when` are excluded, but
+revoked / disputed / appealed flags are read as they stand now — a
+record revoked after `when` is already missing from the board at
+`when` — and expired records fade out past their expiry. Opt-outs are
+read as they stand now too, so an opted-out subject is hidden from
+every board, past or future.
 
 ### Discovery: category boards and tier directory
 
