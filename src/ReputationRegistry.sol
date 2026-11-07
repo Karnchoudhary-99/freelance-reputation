@@ -2424,6 +2424,27 @@ contract ReputationRegistry {
         emit DecayPeriodsUpdated(fullPeriod, halfPeriod);
     }
 
+    /// @notice Retune the dispute window: how long an attester has to
+    ///         answer a dispute before the subject may reinstate the
+    ///         attestation unilaterally. Only the owner may call this.
+    ///         The new window applies to every open dispute from its
+    ///         own `disputedAt` — shortening it can let a subject
+    ///         expire a dispute at once, lengthening it gives the
+    ///         attester more time. Bounds: at least 1 day (shorter
+    ///         would give the attester no real chance to answer), at
+    ///         most 365 days, and always longer than `escalationDelay`
+    ///         so escalation can still fire before the window lapses.
+    function setDisputeWindow(uint256 window) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (
+            window < 1 days ||
+            window > 365 days ||
+            window <= escalationDelay
+        ) revert InvalidGovernanceWindow();
+        disputeWindow = window;
+        emit DisputeWindowUpdated(window);
+    }
+
     /// @notice Change the daily fresh-attestation limit per attester.
     ///         Only the owner may call this. The limit applies from
     ///         the moment it is set: lowering it can block an attester
