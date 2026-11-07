@@ -12,7 +12,7 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/DecayConfig.t.sol`, `test/ReputationBadges.t.sol`, and
 `test/AttesterRateLimit.t.sol`, and
 `test/DisputeBond.t.sol`, `test/CategoryWeights.t.sol`, and
-`test/DisputeAppeals.t.sol`.
+`test/DisputeAppeals.t.sol`, and `test/GovernanceWindows.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -21,8 +21,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 8,128,507 gas |
-| Runtime size | 36,806 bytes |
+| Deployment cost | 8,344,339 gas |
+| Runtime size | 36,969 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -250,6 +250,17 @@ settlement on the upheld path) in these tests; the cheap minima
 extra flag check per record, and every fresh attestation pays one
 extra cold-slot write.
 
+Configurable governance windows added ~216k gas to deployment
+(+163 bytes): the three window slots (`disputeWindow`,
+`escalationDelay`, `appealWindow`), their defaults, the three
+owner setters plus their events, and the `InvalidGovernanceWindow`
+error — the dispute paths themselves only swap a constant read for
+a storage read, so `expireDispute` / `escalateDispute` /
+`appealDispute` costs do not move. Each setter is a single-slot
+update (~28–30k gas avg, in line with the other owner setters).
+The fuzz handler now retunes all three windows mid-run, and a 17th
+invariant checks they stay in bounds and ordered.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -287,6 +298,9 @@ extra cold-slot write.
 | `appealDispute` | 31,197 | 108,764 | 162,024 | 181,924 | 29 |
 | `resolveAppeal` | 27,032 | 136,462 | 162,381 | 172,157 | 15 |
 | `setDisputeBond` | 23,820 | 40,950 | 46,974 | 46,974 | 17 |
+| `setDisputeWindow` | 23,784 | 29,200 | 32,008 | 32,032 | 13 |
+| `setEscalationDelay` | 23,760 | 29,805 | 31,984 | 31,996 | 14 |
+| `setAppealWindow` | 23,764 | 28,200 | 29,846 | 29,858 | 11 |
 | `disputeBondOf` (view) | 2,544 | 4,550 | 4,733 | 4,733 | 12 |
 | `isDisputeEscalated` (view) | 2,457 | 4,347 | 4,820 | 4,820 | 5 |
 | `getScore` (view) | 3,307 | 18,616 | 16,507 | 30,384 | 48 |
@@ -369,7 +383,7 @@ the page size, not with the subject's total history.
   allocation); `setEvidence` afterwards is a single-slot update
   (~39k gas). Evidence never triggers a snapshot or score
   recomputation, so it stays off the expensive paths.
-- **Invariant fuzz baseline:** 16 invariants × 256 runs × depth 100
+- **Invariant fuzz baseline:** 17 invariants × 256 runs × depth 100
   (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
   baseline; re-run `forge snapshot` after contract changes and diff it.
