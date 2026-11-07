@@ -227,6 +227,10 @@ contract ReputationRegistry {
     error InvalidDelegate();
     error DailyAttestationLimitReached();
     error InvalidDailyLimit();
+    error IncorrectDisputeBond();
+    error InvalidDisputeBond();
+    error BondTransferFailed();
+    error ReentrantCall();
 
     event AttestationCreated(
         uint256 indexed id,
@@ -321,6 +325,12 @@ contract ReputationRegistry {
         address indexed delegate
     );
     event MaxAttestationsPerDayUpdated(uint256 maxAttestationsPerDay);
+    event DisputeBondUpdated(uint256 disputeBond);
+    event DisputeBondSettled(
+        uint256 indexed id,
+        address indexed recipient,
+        uint256 amount
+    );
 
     uint8 public constant MAX_SCORE = 100;
     uint8 public constant MAX_WEIGHT = 3;
@@ -394,6 +404,42 @@ contract ReputationRegistry {
     ///         entirely. The day bucket is `block.timestamp / 1 days`,
     ///         so the quota resets at each UTC midnight.
     uint256 public maxAttestationsPerDay = 50;
+
+    /// @notice Largest dispute bond the owner may set: a bond above
+    ///         this would stop being a spam deterrent and start
+    ///         pricing genuine disputes out, so it is capped.
+    uint256 public constant MAX_DISPUTE_BOND = 1 ether;
+
+    /// @notice ETH a subject must stake to open a dispute. Default 0
+    ///         — disputes are free until the owner opts in — so a
+    ///         registry that wants free disputes keeps it at 0 and an
+    ///         owner fighting dispute spam sets it (see
+    ///         `setDisputeBond`). The bond is posted per dispute and
+    ///         settled when the dispute closes: the attester keeps it
+    ///         when the dispute is upheld, the subject gets it back
+    ///         when the attester concedes, the dispute expires, or the
+    ///         attestation is revoked while disputed. Changing the
+    ///         bond never touches bonds already posted — each dispute
+    ///         settles at the amount it was opened with.
+    uint256 public disputeBond;
+
+    /// @notice Bond posted on each open dispute, by attestation id.
+    ///         Zero when no bond was posted (the bond was 0) or the
+    ///         dispute has closed.
+    mapping(uint256 => uint256) private _disputeBond;
+
+    /// @notice Reentrancy lock: the registry pays out ETH when a
+    ///         dispute closes, so the dispute exits are guarded even
+    ///         though every payout follows checks-effects-interactions
+    ///         (the bond is cleared before the transfer lands).
+    bool private _locked;
+
+    modifier nonReentrant() {
+        if (_locked) revert ReentrantCall();
+        _locked = true;
+        _;
+        _locked = false;
+    }
 
     /// @notice EIP-712 type hash for a signed attestation. The attester
     ///         signs off-chain (e.g. from a mobile wallet) and anyone —
@@ -2140,6 +2186,48 @@ contract ReputationRegistry {
         if (limit > MAX_DAILY_LIMIT) revert InvalidDailyLimit();
         maxAttestationsPerDay = limit;
         emit MaxAttestationsPerDayUpdated(limit);
+    }
+
+    /// @notice Set the ETH bond a subject must stake to open a
+    ///         dispute (see `disputeBond`). Only the owner may call
+    ///         this. Setting it to 0 disables the bond and disputes
+    ///         are free again; anything above MAX_DISPUTE_BOND
+    ///         reverts. Bonds already posted are never re-priced —
+    ///         each open dispute settles at the amount it was opened
+    ///         with, so a retune only affects disputes opened after
+    ///         it.
+    function setDisputeBond(uint256 bond) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (bond > MAX_DISPUTE_BOND) revert InvalidDisputeBond();
+        disputeBond = bond;
+        emit DisputeBondUpdated(bond);
+    }
+
+    /// @notice Bond currently posted on an open dispute, by
+    ///         attestation id. Zero when no bond was posted or the
+    ///         dispute has closed.
+    function disputeBondOf(uint256 id) external view returns (uint256) {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        return _disputeBond[id];
+    }
+
+    /// @notice Settle the bond posted on a dispute that just closed:
+    ///         pay it to `recipient` (the attester when the dispute
+    ///         was upheld, the subject otherwise). A no-op when no
+    ///         bond was posted. The bond is cleared before the
+    ///         transfer lands (checks-effects-interactions), and every
+    ///         caller holds the reentrancy lock, so a receiving
+    ///         contract cannot re-enter a dispute exit mid-payout.
+    function _settleDisputeBond(
+        uint256 id,
+        address recipient
+    ) internal {
+        uint256 amount = _disputeBond[id];
+        if (amount == 0) return;
+        _disputeBond[id] = 0;
+        (bool ok, ) = payable(recipient).call{value: amount}("");
+        if (!ok) revert BondTransferFailed();
+        emit DisputeBondSettled(id, recipient, amount);
     }
 
     /// @notice Freeze the registry in an emergency: a bug, a spam
