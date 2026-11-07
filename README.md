@@ -32,6 +32,7 @@ that travel with the worker, not the platform.
 - [x] Category weights (owner-configurable per-category weights for the overall score)
 - [x] Dispute appeals (one appeal per upheld resolution, 7-day window, owner arbitrates)
 - [x] Configurable governance windows (dispute window, escalation delay, appeal window — owner-retunable, apply live)
+- [x] Verified-only mode (owner toggle: only verified attesters may attest, every path)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -369,6 +370,26 @@ verifying or un-verifying someone never rewrites existing records — only
 later attestations (including re-attests, batch, and signed ones) pick up
 the new weight. There is no admin key over scores: the owner can only
 toggle the trust flag, never edit or delete an attestation.
+
+### Verified-only mode
+
+Verification can also be a gate, not just a boost:
+
+- `setVerifiedOnly(enabled)` — only the owner. When on, only verified
+  attesters may attest — the registry becomes allowlist-only. The gate
+  sits in `_attest`, so it covers every path: direct, batch, signed,
+  and delegated attestations, and re-attests of an attester's own
+  records. An unverified attester's calls revert with
+  `NotVerifiedAttester`.
+- Switching the mode on never touches existing records or scores: it
+  gates new writes only, and old attestations from now-unverified
+  attesters keep counting. Verifying an attester while the mode is on
+  unblocks them at once; switching the mode off restores open
+  attestation for everyone.
+- Suspension and pause still take precedence: a suspended attester
+  gets `AttesterSuspended` and a paused registry gets
+  `RegistryPaused`, even when the mode is on. The fuzz suite toggles
+  the mode mid-run (verifying attesters on the fly) and mirrors it.
 
 ### Attester strikes & suspension
 
