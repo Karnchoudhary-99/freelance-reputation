@@ -2445,6 +2445,26 @@ contract ReputationRegistry {
         emit DisputeWindowUpdated(window);
     }
 
+    /// @notice Retune the escalation delay: how long a dispute must sit
+    ///         unanswered before the subject may escalate it to the
+    ///         owner. Only the owner may call this. The new delay
+    ///         applies to every open dispute from its own `disputedAt`
+    ///         — shortening it can make a stalled dispute escalatable
+    ///         at once. Bounds: at least 1 hour (the attester deserves
+    ///         a real chance to answer), at most 30 days, and always
+    ///         shorter than `disputeWindow` so a dispute can be
+    ///         escalated before it expires.
+    function setEscalationDelay(uint256 delay) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (
+            delay < 1 hours ||
+            delay > 30 days ||
+            delay >= disputeWindow
+        ) revert InvalidGovernanceWindow();
+        escalationDelay = delay;
+        emit EscalationDelayUpdated(delay);
+    }
+
     /// @notice Change the daily fresh-attestation limit per attester.
     ///         Only the owner may call this. The limit applies from
     ///         the moment it is set: lowering it can block an attester
