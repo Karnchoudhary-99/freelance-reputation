@@ -1067,7 +1067,10 @@ contract ReputationRegistry {
                 disputed: false,
                 disputeReason: bytes32(0),
                 disputedAt: 0,
-                escalated: false
+                escalated: false,
+                appealed: false,
+                resolvedAt: 0,
+                appealUsed: false
             })
         );
         _subjectAttestations[subject].push(id);
@@ -1128,6 +1131,10 @@ contract ReputationRegistry {
         a.disputeReason = bytes32(0);
         a.disputedAt = 0;
         a.escalated = false;
+        // A revoked record has nothing left to appeal.
+        a.appealed = false;
+        a.resolvedAt = 0;
+        a.appealUsed = false;
         _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         emit AttestationRevoked(id, msg.sender, a.subject);
         _recordSnapshot(a.subject, a.category);
@@ -1166,6 +1173,10 @@ contract ReputationRegistry {
         a.disputed = true;
         a.disputeReason = reasonHash;
         a.disputedAt = uint64(block.timestamp);
+        // A fresh dispute gets a fresh appeal right: any earlier
+        // resolution (and its appeal window) no longer stands.
+        a.resolvedAt = 0;
+        a.appealUsed = false;
         emit DisputeRaised(id, a.attester, a.subject);
         _recordSnapshot(a.subject, a.category);
     }
@@ -1187,12 +1198,15 @@ contract ReputationRegistry {
             a.disputedAt = 0;
             a.escalated = false;
             a.updatedAt = uint64(block.timestamp);
+            // An upheld resolution opens the subject's appeal window.
+            a.resolvedAt = uint64(block.timestamp);
         } else {
             a.revoked = true;
             a.disputed = false;
             a.disputeReason = bytes32(0);
             a.disputedAt = 0;
             a.escalated = false;
+            a.resolvedAt = 0;
             _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         }
         emit DisputeResolved(id, a.attester, a.subject, uphold);
@@ -1271,12 +1285,15 @@ contract ReputationRegistry {
             a.disputedAt = 0;
             a.escalated = false;
             a.updatedAt = uint64(block.timestamp);
+            // An upheld resolution opens the subject's appeal window.
+            a.resolvedAt = uint64(block.timestamp);
         } else {
             a.revoked = true;
             a.disputed = false;
             a.disputeReason = bytes32(0);
             a.disputedAt = 0;
             a.escalated = false;
+            a.resolvedAt = 0;
             _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
         }
         emit DisputeResolvedByOwner(id, a.attester, a.subject, uphold);
@@ -1291,6 +1308,90 @@ contract ReputationRegistry {
     ) external view returns (bool) {
         if (id >= _attestations.length) revert UnknownAttestation();
         return _attestations[id].escalated;
+    }
+
+    /// @notice Appeal an upheld dispute resolution. Only the subject may
+    ///         appeal, only once per dispute outcome, and only within
+    ///         APPEAL_WINDOW (7 days) of the resolution — after that the
+    ///         resolution is final. The appeal re-excludes the
+    ///         attestation from every score until the owner arbitrates
+    ///         it: an attester who "won" a dispute does not get the
+    ///         score back while the subject's last word is pending.
+    ///         Like a dispute, appealing stakes the current dispute
+    ///         bond: it goes to the attester when the appeal is upheld
+    ///         and back to you when the owner concedes it. A conceded
+    ///         or expired dispute has nothing to appeal — the record
+    ///         is already revoked or reinstated — and an expired
+    ///         attestation cannot be appealed either, since it counts
+    ///         toward no score. Appeals stay open while paused, like
+    ///         every other dispute exit.
+    function appealDispute(uint256 id) external payable nonReentrant {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        Attestation storage a = _attestations[id];
+        if (a.subject != msg.sender) revert NotSubject();
+        if (a.revoked) revert AlreadyRevoked();
+        if (a.disputed) revert AlreadyDisputed();
+        if (a.appealed) revert AlreadyAppealed();
+        if (a.appealUsed || a.resolvedAt == 0) revert NotAppealable();
+        if (block.timestamp > uint256(a.resolvedAt) + APPEAL_WINDOW) {
+            revert AppealWindowExpired();
+        }
+        if (_isExpiredAt(a, uint64(block.timestamp))) {
+            revert AttestationExpired();
+        }
+        if (msg.value != disputeBond) revert IncorrectDisputeBond();
+        _disputeBond[id] = msg.value;
+        a.appealed = true;
+        a.appealUsed = true;
+        a.resolvedAt = 0;
+        emit AppealRaised(id, a.attester, a.subject);
+        _recordSnapshot(a.subject, a.category);
+    }
+
+    /// @notice Arbitrate an open appeal as the registry owner. Upholding
+    ///         re-confirms the attestation (decay clock refreshed) and
+    ///         the record counts again; conceding revokes it, freeing
+    ///         the subject to be re-attested later. The appeal bond
+    ///         settles the same way as a dispute bond: to the attester
+    ///         on uphold, back to the subject on concede. Only the
+    ///         owner arbitrates an appeal, so neither party judges
+    ///         their own case — and the owner may not appeal on the
+    ///         subject's behalf either: an appeal is the subject's own
+    ///         last word. Stays open while paused, like every other
+    ///         dispute exit.
+    function resolveAppeal(uint256 id, bool uphold) external nonReentrant {
+        if (msg.sender != owner) revert NotOwner();
+        if (id >= _attestations.length) revert UnknownAttestation();
+        Attestation storage a = _attestations[id];
+        if (!a.appealed) revert NotAppealed();
+        if (uphold) {
+            a.appealed = false;
+            a.updatedAt = uint64(block.timestamp);
+        } else {
+            a.appealed = false;
+            a.revoked = true;
+            _activeByKey[_key(a.attester, a.subject, a.category)] = 0;
+        }
+        emit AppealResolved(id, a.attester, a.subject, uphold);
+        _recordSnapshot(a.subject, a.category);
+        _settleDisputeBond(id, uphold ? a.attester : a.subject);
+    }
+
+    /// @notice Whether an appeal of an upheld resolution is open on an
+    ///         attestation.
+    function isAppealed(uint256 id) external view returns (bool) {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        return _attestations[id].appealed;
+    }
+
+    /// @notice Last moment the subject may appeal the upheld resolution
+    ///         on an attestation (resolution time + APPEAL_WINDOW).
+    ///         Returns 0 when no appeal is available.
+    function appealDeadline(uint256 id) external view returns (uint64) {
+        if (id >= _attestations.length) revert UnknownAttestation();
+        uint64 resolvedAt = _attestations[id].resolvedAt;
+        if (resolvedAt == 0) return 0;
+        return resolvedAt + uint64(APPEAL_WINDOW);
     }
 
     /// @notice Weighted average score across all active attestations.
@@ -1615,7 +1716,9 @@ contract ReputationRegistry {
             Attestation storage a = _attestations[ids[i]];
             if (a.revoked) {
                 stats.revoked++;
-            } else if (a.disputed) {
+            } else if (a.disputed || a.appealed) {
+                // An appealed record is excluded from scores exactly
+                // like a disputed one, so it counts here too.
                 stats.disputed++;
             } else {
                 stats.active++;
@@ -1630,8 +1733,9 @@ contract ReputationRegistry {
     ///         average, then toward the attester seen first (insertion
     ///         sort is stable, so the ranking is deterministic). "Active"
     ///         means the record still counts toward a score — not revoked,
-    ///         not disputed, not expired — the same rule the score views
-    ///         use. Attesters with no active attestations are excluded.
+    ///         not disputed, not appealed, not expired — the same rule the
+    ///         score views use. Attesters with no active attestations are
+    ///         excluded.
     ///         A suspended attester stays ranked on the strength of their
     ///         past records (suspension blocks new attestations only),
     ///         and `weight` is their current `attesterWeight`, so a
@@ -1686,9 +1790,10 @@ contract ReputationRegistry {
     }
 
     /// @notice How many of an attester's records still count toward
-    ///         scores: not revoked, not disputed, not expired. The
-    ///         ranking rule for `getTopAttesters`, shared so the board
-    ///         and any future caller agree on what "active" means.
+    ///         scores: not revoked, not disputed, not appealed, not
+    ///         expired. The ranking rule for `getTopAttesters`, shared
+    ///         so the board and any future caller agree on what
+    ///         "active" means.
     function _activeAttestationCount(
         address attester
     ) internal view returns (uint256 active) {
@@ -1697,6 +1802,7 @@ contract ReputationRegistry {
             Attestation storage a = _attestations[ids[i]];
             if (a.revoked) continue;
             if (a.disputed) continue;
+            if (a.appealed) continue;
             if (_isExpiredAt(a, uint64(block.timestamp))) continue;
             active++;
         }
@@ -2513,11 +2619,12 @@ contract ReputationRegistry {
     /// @notice Score as it stands at time `when`, with decay measured
     ///         against `when` instead of the current block time.
     ///         Attestations created after `when` are excluded — they did
-    ///         not exist yet at that point. Revoked/disputed flags are
-    ///         read as they stand now: this is a decay preview, not a
-    ///         full historical reconstruction — a revocation or dispute
-    ///         that happened after `when` is not rewound. For a future
-    ///         `when` the result is exact, given the records as they are.
+    ///         not exist yet at that point. Revoked/disputed/appealed
+    ///         flags are read as they stand now: this is a decay preview,
+    ///         not a full historical reconstruction — a revocation or
+    ///         dispute that happened after `when` is not rewound. For a
+    ///         future `when` the result is exact, given the records as
+    ///         they are.
     ///         Expired attestations are excluded the same way: a record
     ///         whose last update plus the expiry duration is at or
     ///         before `when` has faded out by then (and a re-attestation
@@ -2534,6 +2641,7 @@ contract ReputationRegistry {
             Attestation storage a = _attestations[ids[i]];
             if (a.revoked) continue;
             if (a.disputed) continue;
+            if (a.appealed) continue;
             if (a.createdAt > when) continue;
             if (_isExpiredAt(a, when)) continue;
             if (filterCategory && a.category != category) continue;
