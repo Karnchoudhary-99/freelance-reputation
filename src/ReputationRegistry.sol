@@ -258,6 +258,7 @@ contract ReputationRegistry {
     error IncorrectDisputeBond();
     error InvalidDisputeBond();
     error InvalidCategoryWeight();
+    error NotVerifiedAttester();
     error BondTransferFailed();
     error ReentrantCall();
     error NotAppealable();
@@ -331,6 +332,7 @@ contract ReputationRegistry {
         bool upheld
     );
     event AttesterVerified(address indexed attester, bool verified);
+    event VerifiedOnlyUpdated(bool verifiedOnly);
     event LeaderboardOptOut(address indexed subject, bool optedOut);
     event AttesterStruck(address indexed attester, uint256 strikes);
     event StrikesCleared(address indexed attester);
@@ -579,6 +581,18 @@ contract ReputationRegistry {
     /// @notice Verified attesters, set by the owner (see
     ///         `setVerifiedAttester`).
     mapping(address => bool) private _verifiedAttesters;
+
+    /// @notice Whether only verified attesters may attest (see
+    ///         `setVerifiedOnly`). Off by default: any attester may
+    ///         file an attestation, and verification is only a +1
+    ///         weight boost. When the owner switches it on, the
+    ///         registry becomes allowlist-only — an unverified
+    ///         attester's calls revert with `NotVerifiedAttester`
+    ///         on every path (direct, batch, signed, delegated),
+    ///         including re-attests of their own records. Existing
+    ///         records and scores are never touched: the mode gates
+    ///         new writes, not reads.
+    bool public verifiedOnly;
 
     /// @notice Delegates per attester: when an authorized delegate's
     ///         authority lapses (see `setDelegate`). `_delegateList`
