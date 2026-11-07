@@ -5,10 +5,10 @@ import {Test} from "forge-std/Test.sol";
 import {ReputationRegistry} from "../src/ReputationRegistry.sol";
 
 /// @notice Fuzz handler driving the registry through attest / revoke /
-///         dispute / resolve / expire / escalate / owner-arbitrate
-///         cycles plus time warps, with owner strikes and
-///         strike-clearing mixed in, and pauses / unpauses so the
-///         fuzz runs exercise the frozen state too.
+///         dispute / resolve / expire / escalate / owner-arbitrate /
+///         appeal / appeal-arbitrate cycles plus time warps, with owner
+///         strikes and strike-clearing mixed in, and pauses / unpauses
+///         so the fuzz runs exercise the frozen state too.
 ///         Attestations are sometimes routed through an active
 ///         delegate (set / revoked by the handler), so the delegate
 ///         paths get the same lifecycle coverage as direct attests.
@@ -40,6 +40,12 @@ contract ReputationHandler is Test {
     mapping(uint256 => bool) public disputed;
     mapping(uint256 => bool) public escalated;
     mapping(uint256 => uint64) public disputedAt;
+    // Appeal mirror: whether an appeal is open, when the last
+    // resolution upheld the record (0 = no appeal available), and
+    // whether the appeal for the current outcome was already used.
+    mapping(uint256 => bool) public appealed;
+    mapping(uint256 => uint64) public resolvedAt;
+    mapping(uint256 => bool) public appealUsed;
     mapping(uint256 => address) public recordAttester;
     mapping(uint256 => address) public recordSubject;
     mapping(uint256 => ReputationRegistry.Category) public recordCategory;
@@ -113,6 +119,7 @@ contract ReputationHandler is Test {
         bytes32 key = _key(attester, subject, category);
         uint256 existing = activeByKey[key];
         if (existing != 0 && disputed[existing - 1]) return; // must resolve first
+        if (existing != 0 && appealed[existing - 1]) return; // must arbitrate first
         // Route about half the attestations through an active delegate
         // when the attester has one: the record is identical (same
         // attester, same weight), only the caller differs.
@@ -163,6 +170,10 @@ contract ReputationHandler is Test {
         disputed[id] = false;
         escalated[id] = false;
         disputedAt[id] = 0;
+        // A revoked record has nothing left to appeal.
+        appealed[id] = false;
+        resolvedAt[id] = 0;
+        appealUsed[id] = false;
         activeByKey[
             _key(recordAttester[id], recordSubject[id], recordCategory[id])
         ] = 0;
@@ -171,7 +182,7 @@ contract ReputationHandler is Test {
     function dispute(uint256 seed) external {
         if (created == 0) return;
         uint256 id = seed % created;
-        if (revoked[id] || disputed[id]) return;
+        if (revoked[id] || disputed[id] || appealed[id]) return;
         if (_isExpired(id)) return; // expired records cannot be disputed
         // The bond comes from the pranked subject's balance — the
         // invariant test funds every actor.
@@ -181,6 +192,9 @@ contract ReputationHandler is Test {
         _touch(recordSubject[id], recordCategory[id]);
         disputed[id] = true;
         disputedAt[id] = uint64(block.timestamp);
+        // A fresh dispute gets a fresh appeal right.
+        resolvedAt[id] = 0;
+        appealUsed[id] = false;
         bondOf[id] = bond;
         outstandingBonds += bond;
     }
@@ -206,6 +220,10 @@ contract ReputationHandler is Test {
         escalated[id] = false;
         disputedAt[id] = 0;
         _settleBond(id);
+        // An upheld resolution opens the subject's appeal window.
+        if (uphold) {
+            resolvedAt[id] = uint64(block.timestamp);
+        }
         if (!uphold) {
             revoked[id] = true;
             activeByKey[
@@ -260,6 +278,55 @@ contract ReputationHandler is Test {
         disputed[id] = false;
         escalated[id] = false;
         disputedAt[id] = 0;
+        _settleBond(id);
+        // An upheld resolution opens the subject's appeal window.
+        if (uphold) {
+            resolvedAt[id] = uint64(block.timestamp);
+        }
+        if (!uphold) {
+            revoked[id] = true;
+            activeByKey[
+                _key(recordAttester[id], recordSubject[id], recordCategory[id])
+            ] = 0;
+        }
+    }
+
+    /// @notice Appeal an upheld resolution: subject-only, once per
+    ///         outcome, within APPEAL_WINDOW of the resolution, and
+    ///         never on an expired record. Posts the current bond,
+    ///         mirrored so the bond-balance invariant stays exact.
+    ///         Appeals record a snapshot, so the scope is touched.
+    function appeal(uint256 seed) external {
+        if (created == 0) return;
+        uint256 id = seed % created;
+        if (revoked[id] || disputed[id] || appealed[id]) return;
+        if (appealUsed[id] || resolvedAt[id] == 0) return;
+        if (
+            block.timestamp >
+            uint256(resolvedAt[id]) + registry.APPEAL_WINDOW()
+        ) return;
+        if (_isExpired(id)) return;
+        uint256 bond = registry.disputeBond();
+        vm.prank(recordSubject[id]);
+        registry.appealDispute{value: bond}(id);
+        _touch(recordSubject[id], recordCategory[id]);
+        appealed[id] = true;
+        appealUsed[id] = true;
+        resolvedAt[id] = 0;
+        bondOf[id] = bond;
+        outstandingBonds += bond;
+    }
+
+    /// @notice Arbitrate an open appeal as the registry owner (the
+    ///         handler deployed the registry). Uphold re-confirms,
+    ///         concede revokes; the bond settles either way.
+    function resolveAppeal(uint256 seed, bool uphold) external {
+        if (created == 0) return;
+        uint256 id = seed % created;
+        if (revoked[id] || !appealed[id]) return;
+        registry.resolveAppeal(id, uphold);
+        _touch(recordSubject[id], recordCategory[id]);
+        appealed[id] = false;
         _settleBond(id);
         if (!uphold) {
             revoked[id] = true;
@@ -434,7 +501,9 @@ contract ReputationInvariants is Test {
                 .getAttestations(actors[i]);
             uint256 active;
             for (uint256 j = 0; j < recs.length; j++) {
-                if (recs[j].revoked || recs[j].disputed) continue;
+                if (recs[j].revoked || recs[j].disputed || recs[j].appealed) {
+                    continue;
+                }
                 // Expired records stop counting, like revoked ones.
                 if (
                     duration > 0 &&
@@ -483,7 +552,9 @@ contract ReputationInvariants is Test {
             uint256 total;
             uint256 count;
             for (uint256 j = 0; j < recs.length; j++) {
-                if (recs[j].revoked || recs[j].disputed) continue;
+                if (recs[j].revoked || recs[j].disputed || recs[j].appealed) {
+                    continue;
+                }
                 if (
                     duration > 0 &&
                     block.timestamp >=
@@ -523,9 +594,15 @@ contract ReputationInvariants is Test {
             ReputationRegistry.Attestation[] memory recs = registry
                 .getAttestations(actors[i]);
             for (uint256 j = 0; j < recs.length; j++) {
-                if (recs[j].revoked || recs[j].disputed) continue;
+                if (recs[j].revoked || recs[j].disputed || recs[j].appealed) {
+                    continue;
+                }
                 for (uint256 k = j + 1; k < recs.length; k++) {
-                    if (recs[k].revoked || recs[k].disputed) continue;
+                    if (
+                        recs[k].revoked ||
+                        recs[k].disputed ||
+                        recs[k].appealed
+                    ) continue;
                     // Two active records for the same subject must never
                     // share (attester, category): re-attesting updates.
                     assertTrue(
@@ -731,6 +808,43 @@ contract ReputationInvariants is Test {
         }
     }
 
+    /// @notice The handler's appeal mirror matches the registry
+    ///         exactly: an appealed record is always still active
+    ///         (not revoked, not disputed), an appeal is usable
+    ///         exactly once per upheld resolution, and a stored
+    ///         resolution time implies no appeal is open or used.
+    ///         The deadline view agrees with the stored time.
+    function invariant_appeal_mirror_matches() public view {
+        uint256 created = handler.created();
+        for (uint256 id = 0; id < created; id++) {
+            ReputationRegistry.Attestation memory a = registry.attestation(
+                id
+            );
+            assertEq(a.appealed, handler.appealed(id));
+            assertEq(registry.isAppealed(id), handler.appealed(id));
+            assertEq(a.resolvedAt, handler.resolvedAt(id));
+            assertEq(a.appealUsed, handler.appealUsed(id));
+            if (a.appealed) {
+                assertFalse(a.revoked);
+                assertFalse(a.disputed);
+                assertTrue(a.appealUsed);
+                assertEq(a.resolvedAt, 0);
+            }
+            if (a.resolvedAt != 0) {
+                assertFalse(a.disputed);
+                assertFalse(a.appealed);
+                assertFalse(a.appealUsed);
+                assertFalse(a.revoked);
+            }
+            assertEq(
+                registry.appealDeadline(id),
+                a.resolvedAt == 0
+                    ? 0
+                    : a.resolvedAt + uint64(registry.APPEAL_WINDOW())
+            );
+        }
+    }
+
     /// @notice The overall average is a weighted mean of the active
     ///         attestations' scores, so it can never fall outside
     ///         their range: at least the lowest active score, at most
@@ -750,7 +864,9 @@ contract ReputationInvariants is Test {
             uint256 maxScore;
             uint256 count;
             for (uint256 j = 0; j < recs.length; j++) {
-                if (recs[j].revoked || recs[j].disputed) continue;
+                if (recs[j].revoked || recs[j].disputed || recs[j].appealed) {
+                    continue;
+                }
                 if (
                     duration > 0 &&
                     block.timestamp >=
