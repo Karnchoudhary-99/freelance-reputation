@@ -27,6 +27,7 @@ that travel with the worker, not the platform.
 - [x] Attester delegation (expiry-bounded delegates attest on your behalf)
 - [x] Dispute escalation (subject escalates after 7 unanswered days, owner arbitrates)
 - [x] Milestone badges (RisingStar → Veteran, cumulative, decay-aware, batch reads)
+- [x] Attester daily rate limit (anti-spam cap, owner-configurable, re-attests free)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -266,6 +267,36 @@ Suspension blocks only *new* attestations — a suspended attester may
 still revoke their own attestations and resolve disputes over them, so
 enforcement never traps a subject in an unresolvable dispute. Only the
 owner may strike or clear; both functions reject the zero address.
+
+### Daily attestation limit
+
+Strikes punish a bad attester after the fact; the daily limit stops a
+spam account from flooding the registry in the first place. Each
+attester may create at most `maxAttestationsPerDay` *fresh*
+attestations per UTC day — default 50 (`MAX_DAILY_LIMIT` caps the
+setting at 1000), far above what a genuine attester files in a day and
+low enough that a spam run cannot bury real records. The quota counts
+filings, not live records: revoking a record does not refund the day's
+quota, and the count resets at each UTC midnight
+(`block.timestamp / 1 days`).
+
+Only fresh attestations consume quota. Re-attesting — updating the
+score or comment on an existing record — is always free, even at the
+cap, so an attester can keep their existing assessments current
+without burning the quota. Enforcement lives in `_attest`, so the
+direct, batch, signed, and delegated paths all count against the
+*attester* (a delegate's filings burn the attester's quota, not the
+delegate's own). A batch that would cross the cap reverts atomically:
+no partial records, no partial quota.
+
+The owner may retune the limit with `setMaxAttestationsPerDay(limit)`
+(emits `MaxAttestationsPerDayUpdated`); `0` disables the limit
+entirely. Lowering it takes effect immediately — an attester who
+already filed that many today is blocked at once — and raising it
+unblocks them at once. `attestationsToday(attester)` reads the current
+day's count; a 12th invariant fuzz test asserts it never exceeds the
+limit. A limit hit reverts with `DailyAttestationLimitReached`, and a
+setting above the cap reverts with `InvalidDailyLimit`.
 
 ### Reputation tiers
 
@@ -569,7 +600,7 @@ and 365-day decay tiers and the 30-day dispute window) and owner strikes
 / strike-clearing, plus pause / unpause cycles and delegate set / revoke
 cycles (about half the attestations are routed through an active
 delegate when the attester has one), with a guarded handler, so every handler call is
-expected to succeed and a revert can never mask a broken invariant. Eleven
+expected to succeed and a revert can never mask a broken invariant. Twelve
 invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
@@ -583,9 +614,11 @@ one), the strike mirror matching the registry with `attesterWeight`
 staying frozen while the registry is paused, and the delegation mirror
 matching the registry with `isDelegate` true exactly while the mirrored
 expiry is still in the future, and the escalation mirror matching the
-registry with an escalated record always still disputed. Baseline: 11 invariants × 256 runs × depth 100 — 25,600 handler calls
+registry with an escalated record always still disputed, and no
+attester's `attestationsToday` ever exceeding `maxAttestationsPerDay`.
+Baseline: 12 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 6,702,638 gas, 30,754 bytes runtime).
+per-function gas (deploy 6,811,812 gas, 31,046 bytes runtime).
 
 ### Run it
 
