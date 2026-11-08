@@ -35,6 +35,7 @@ that travel with the worker, not the platform.
 - [x] Verified-only mode (owner toggle: only verified attesters may attest, every path)
 - [x] Time-windowed leaderboards (leaderboard as of any past/future time, category boards)
 - [x] Attestation requests (subjects ask a specific attester, fulfilment links the record)
+- [x] Attester credibility (dispute rulings tracked per attester, credibility score + board)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -333,7 +334,7 @@ relayer (a platform backend, a friend) submits it:
   view of what one client has endorsed, with the same empty-page
   semantics as the subject-side pagination. Updates do not add records,
   so the index counts attestations, not writes.
-- `attesterStats(attester)` — `{given, active, revoked, disputed, strikes, suspended}`: the
+- `attesterStats(attester)` — `{given, active, revoked, disputed, strikes, suspended, disputesUpheld, disputesConceded, credibilityBps}`: the
   attester's track record. A client deciding whether to trust an
   endorsement can weigh the attester, not just the score.
 
@@ -354,6 +355,38 @@ relayer (a platform backend, a friend) submits it:
   attested. Like the subject boards, this is a view for off-chain
   `eth_call`: it scans the whole attester set, so keep `limit` small
   on a busy registry.
+
+### Attester credibility
+
+- `attesterCredibility(attester)` — `(credibilityBps, upheld,
+  conceded)`: how an attester's endorsements held up when challenged.
+  Every dispute ruling is counted — the attester resolving it, the
+  owner arbitrating an escalated dispute, the owner arbitrating an
+  appeal — and an attester who revokes their own record while it is
+  disputed concedes in effect (the bond goes back to the subject), so
+  that counts as conceded too. A dispute that expires unanswered is
+  neither won nor lost: it lapses without a ruling. Credibility is the
+  upheld share in basis points (`upheld * 10000 / (upheld +
+  conceded)`); with no ruled dispute yet it reads 10000, and the
+  counts travel alongside so a caller can tell a 10000-from-zero-rulings
+  apart from a 10000-from-ten. One record can contribute twice — once
+  for its dispute ruling, once for its appeal ruling — because
+  credibility measures rulings, not records. It never changes a score
+  by itself: it is a read for clients choosing whose endorsement to
+  trust, next to `attesterWeight`, which measures how the attester is
+  rated rather than how their own endorsements held up.
+- `getTopAttestersByCredibility(limit)` — the most credible endorsers,
+  ranked by `credibilityBps` highest first: `{attester,
+  credibilityBps, upheld, conceded}`. Ties break toward the attester
+  with more upheld rulings, then toward the attester seen first, so
+  the ranking is deterministic. Only attesters with at least one ruled
+  dispute appear: a 10000 from zero rulings is not a track record, and
+  listing every never-disputed attester at the top would bury the ones
+  whose credibility was actually tested. A suspended attester stays
+  ranked on the strength of their rulings (suspension blocks new
+  attestations only). `limit` clamps to the ranked set and 0 returns
+  an empty array. Like the other boards, this is a view for off-chain
+  `eth_call` over the whole attester set.
 
 ### Verified attesters
 
@@ -819,7 +852,7 @@ cycles (about half the attestations are routed through an active
 delegate when the attester has one), plus owner category-weight retunes
 (biased toward the default 100 and toward 0, so the fuzz exercises both
 the equal blend and full exclusion), with a guarded handler, so every handler call is
-expected to succeed and a revert can never mask a broken invariant. Seventeen
+expected to succeed and a revert can never mask a broken invariant. Twenty
 invariants hold across every run:
 score bounds (and zero when empty), count matching active records,
 category counts summing to the overall count, the weighted average
@@ -849,15 +882,17 @@ resolution time, and fulfilled requests always linking to a matching
 attestation (same attester, subject, and category, flagged as from a
 request) whose own link points back at a fulfilled request for the same
 triple, with every open, unexpired request findable through
-`openRequestId`.
-Baseline: 19 invariants × 256 runs × depth 100 — 25,600 handler calls
+`openRequestId`, and the credibility mirror matching the registry with
+the basis-points score exactly the upheld share (10000 with no ruled
+dispute yet).
+Baseline: 20 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 9,508,020 gas, 42,901 bytes runtime).
+per-function gas (deploy 9,825,202 gas, 44,367 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 417 tests (398 unit + 19 invariants)
+forge test          # 431 tests (411 unit + 20 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
 ```
 
