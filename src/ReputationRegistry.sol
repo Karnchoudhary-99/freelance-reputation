@@ -186,6 +186,26 @@ contract ReputationRegistry {
         Score reliability;
     }
 
+    /// @notice Everything a marketplace needs to render one freelancer's
+    ///         reputation card in a single RPC call: the full profile
+    ///         (overall + all four category scores), the tier and badges
+    ///         derived from it, the most recent frozen score snapshot
+    ///         (plus whether any history exists), and the subject's
+    ///         latest score proof (plus whether one was ever issued).
+    ///         Snapshot and proof are frozen records — after time passes
+    ///         (decay, expiry) they can differ from the live profile,
+    ///         which is the point: the export shows both the live
+    ///         reputation and the last certified/frozen state at once.
+    struct FullProfile {
+        Profile profile;
+        Tier tier;
+        Badge[] badges;
+        ScoreSnapshot latestSnapshot;
+        bool hasSnapshot;
+        ScoreProof proof;
+        bool hasProof;
+    }
+
     /// @notice One leaderboard row: a subject's overall score plus tier,
     ///         so a marketplace can rank freelancers in a single call.
     struct LeaderboardEntry {
@@ -2554,6 +2574,71 @@ contract ReputationRegistry {
         profile.communication = _scoreAt(ids, Category.Communication, true, when);
         profile.timeliness = _scoreAt(ids, Category.Timeliness, true, when);
         profile.reliability = _scoreAt(ids, Category.Reliability, true, when);
+    }
+
+    /// @notice The whole reputation card for one subject in a single
+    ///         call: full profile, tier, badges, latest frozen snapshot,
+    ///         and latest score proof. Every field agrees with the
+    ///         single-purpose view that owns it (`getProfile`, `tierOf`,
+    ///         `getBadges`, `latestScoreSnapshot`, `scoreProofOf`) — the
+    ///         export only saves RPC round trips, it never re-derives
+    ///         anything. Unknown subjects return an all-zero export
+    ///         (Unranked, no badges, no snapshot, no proof), exactly
+    ///         like the single views do for them.
+    function getFullProfile(
+        address subject
+    ) external view returns (FullProfile memory full) {
+        uint256[] storage ids = _subjectAttestations[subject];
+        full.profile.overall = _score(ids, Category.Overall, false);
+        full.profile.quality = _score(ids, Category.Quality, true);
+        full.profile.communication = _score(ids, Category.Communication, true);
+        full.profile.timeliness = _score(ids, Category.Timeliness, true);
+        full.profile.reliability = _score(ids, Category.Reliability, true);
+        full.tier = _tierOf(full.profile.overall);
+        full.badges = _badgesOf(full.profile.overall);
+        ScoreSnapshot[] storage snapshots = _scoreHistory[subject][
+            Category.Overall
+        ];
+        full.hasSnapshot = snapshots.length > 0;
+        if (full.hasSnapshot) {
+            full.latestSnapshot = snapshots[snapshots.length - 1];
+        }
+        full.proof = _scoreProofs[subject];
+        full.hasProof = _hasScoreProof[subject];
+    }
+
+    /// @notice Decay-preview version of `getFullProfile`: profile, tier,
+    ///         and badges as they will stand (or stood) at time `when`,
+    ///         with the same preview semantics as `getProfileAt` and
+    ///         `tierOfAt`. The snapshot and proof are frozen records,
+    ///         not previews — they are returned as they stand, exactly
+    ///         like `getFullProfile` returns them.
+    function getFullProfileAt(
+        address subject,
+        uint64 when
+    ) external view returns (FullProfile memory full) {
+        uint256[] storage ids = _subjectAttestations[subject];
+        full.profile.overall = _scoreAt(ids, Category.Overall, false, when);
+        full.profile.quality = _scoreAt(ids, Category.Quality, true, when);
+        full.profile.communication = _scoreAt(
+            ids,
+            Category.Communication,
+            true,
+            when
+        );
+        full.profile.timeliness = _scoreAt(ids, Category.Timeliness, true, when);
+        full.profile.reliability = _scoreAt(ids, Category.Reliability, true, when);
+        full.tier = _tierOf(full.profile.overall);
+        full.badges = _badgesOf(full.profile.overall);
+        ScoreSnapshot[] storage snapshots = _scoreHistory[subject][
+            Category.Overall
+        ];
+        full.hasSnapshot = snapshots.length > 0;
+        if (full.hasSnapshot) {
+            full.latestSnapshot = snapshots[snapshots.length - 1];
+        }
+        full.proof = _scoreProofs[subject];
+        full.hasProof = _hasScoreProof[subject];
     }
 
     /// @notice Overall scores for many subjects in one call, in the same
