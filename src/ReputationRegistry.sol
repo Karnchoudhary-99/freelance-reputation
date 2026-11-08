@@ -2170,8 +2170,11 @@ contract ReputationRegistry {
     /// @notice An attester's track record, computed from their index: how
     ///         many attestations they gave, how many are still active, how
     ///         many they revoked, and how many are currently disputed.
-    ///         A client deciding whether to trust an endorsement can weigh
-    ///         the attester, not just the score.
+    ///         Plus their dispute record: rulings upheld and conceded,
+    ///         and the credibility those rulings imply (see
+    ///         `attesterCredibility`). A client deciding whether to
+    ///         trust an endorsement can weigh the attester, not just
+    ///         the score.
     struct AttesterStats {
         uint256 given;
         uint256 active;
@@ -2179,6 +2182,9 @@ contract ReputationRegistry {
         uint256 disputed;
         uint256 strikes;
         bool suspended;
+        uint256 disputesUpheld;
+        uint256 disputesConceded;
+        uint256 credibilityBps; // 10000 with no ruled dispute yet
     }
 
     function attesterStats(
@@ -2200,6 +2206,9 @@ contract ReputationRegistry {
         }
         stats.strikes = _strikes[attester];
         stats.suspended = stats.strikes >= MAX_STRIKES;
+        stats.disputesUpheld = _disputesUpheld[attester];
+        stats.disputesConceded = _disputesConceded[attester];
+        stats.credibilityBps = _credibilityBps(attester);
     }
 
     /// @notice Top attesters by active attestations given, highest first;
@@ -3323,6 +3332,42 @@ contract ReputationRegistry {
             weight = uint8(reduced);
         }
         return weight;
+    }
+
+    /// @notice An attester's credibility from their dispute record:
+    ///         the share of ruled disputes that went their way, in
+    ///         basis points (10000 = every ruling upheld). Counts
+    ///         rulings, not records — see `_disputesUpheld`. An
+    ///         attester with no ruled dispute yet reads 10000: no
+    ///         history is not a bad history, and a newcomer must not
+    ///         rank below an attester who lost every dispute. The
+    ///         counts travel alongside, so a caller can tell a
+    ///         10000-from-zero-rulings apart from a 10000-from-ten.
+    ///         Credibility never changes a score by itself — it is a
+    ///         read for clients choosing whose endorsement to trust —
+    ///         but it is the honest number next to `attesterWeight`,
+    ///         which measures how the attester is rated, not how
+    ///         their own endorsements held up.
+    function attesterCredibility(
+        address attester
+    )
+        external
+        view
+        returns (uint256 credibilityBps, uint256 upheld, uint256 conceded)
+    {
+        upheld = _disputesUpheld[attester];
+        conceded = _disputesConceded[attester];
+        credibilityBps = _credibilityBps(attester);
+    }
+
+    /// @notice Shared credibility computation for `attesterCredibility`,
+    ///         `attesterStats`, and the credibility board.
+    function _credibilityBps(address attester) internal view returns (uint256) {
+        uint256 upheld = _disputesUpheld[attester];
+        uint256 conceded = _disputesConceded[attester];
+        uint256 total = upheld + conceded;
+        if (total == 0) return 10000;
+        return (upheld * 10000) / total;
     }
 
     function _score(
