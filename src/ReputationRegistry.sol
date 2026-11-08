@@ -207,6 +207,16 @@ contract ReputationRegistry {
         uint8 weight; // attesterWeight(attester) right now
     }
 
+    /// @notice One row of the credibility board: an attester's
+    ///         dispute record, so a marketplace can rank endorsers
+    ///         by how their attestations held up when challenged.
+    struct AttesterCredibilityEntry {
+        address attester;
+        uint256 credibilityBps; // upheld share, 10000 = every ruling upheld
+        uint256 upheld; // disputes ruled in the attester's favour
+        uint256 conceded; // disputes ruled against the attester
+    }
+
     /// @notice One point in a subject's score history: the score as it
     ///         stood right after a state change (attest, update, revoke,
     ///         dispute raise/resolve/expire). A frontend can chart a
@@ -2266,6 +2276,62 @@ contract ReputationRegistry {
         }
         uint256 outCount = limit < rankedCount ? limit : rankedCount;
         AttesterLeaderboardEntry[] memory out = new AttesterLeaderboardEntry[](outCount);
+        for (uint256 i = 0; i < outCount; i++) {
+            out[i] = ranked[i];
+        }
+        return out;
+    }
+
+    /// @notice Top attesters by credibility, highest first; ties break
+    ///         toward the attester with more upheld rulings, then
+    ///         toward the attester seen first (insertion sort is
+    ///         stable, so the ranking is deterministic). Only
+    ///         attesters with at least one ruled dispute appear: a
+    ///         10000 from zero rulings is not a track record, and
+    ///         listing every never-disputed attester at the top would
+    ///         bury the attesters whose credibility was actually
+    ///         tested. `limit` clamps to the ranked set and 0 returns
+    ///         an empty array. Like the other boards, this is a view
+    ///         over the whole attester set for off-chain `eth_call`,
+    ///         not a transaction input. A suspended attester stays
+    ///         ranked on the strength of their rulings — suspension
+    ///         blocks new attestations only.
+    function getTopAttestersByCredibility(
+        uint256 limit
+    ) external view returns (AttesterCredibilityEntry[] memory) {
+        AttesterCredibilityEntry[] memory ranked = new AttesterCredibilityEntry[](
+            _attesters.length
+        );
+        uint256 rankedCount;
+        for (uint256 i = 0; i < _attesters.length; i++) {
+            address attester = _attesters[i];
+            uint256 upheld = _disputesUpheld[attester];
+            uint256 conceded = _disputesConceded[attester];
+            if (upheld + conceded == 0) continue;
+            ranked[rankedCount++] = AttesterCredibilityEntry({
+                attester: attester,
+                credibilityBps: _credibilityBps(attester),
+                upheld: upheld,
+                conceded: conceded
+            });
+        }
+        // Insertion sort, descending by credibility, then by upheld count.
+        for (uint256 i = 1; i < rankedCount; i++) {
+            AttesterCredibilityEntry memory entry = ranked[i];
+            uint256 j = i;
+            while (
+                j > 0 &&
+                (ranked[j - 1].credibilityBps < entry.credibilityBps ||
+                    (ranked[j - 1].credibilityBps == entry.credibilityBps &&
+                        ranked[j - 1].upheld < entry.upheld))
+            ) {
+                ranked[j] = ranked[j - 1];
+                j--;
+            }
+            ranked[j] = entry;
+        }
+        uint256 outCount = limit < rankedCount ? limit : rankedCount;
+        AttesterCredibilityEntry[] memory out = new AttesterCredibilityEntry[](outCount);
         for (uint256 i = 0; i < outCount; i++) {
             out[i] = ranked[i];
         }
