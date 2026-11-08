@@ -694,6 +694,20 @@ contract ReputationRegistry {
     ///         `strikeAttester`). Three strikes suspends the attester.
     mapping(address => uint256) private _strikes;
 
+    /// @notice Dispute outcomes per attester: how many disputes over
+    ///         their attestations were ruled in their favour (upheld)
+    ///         and how many against them (conceded). Only rulings
+    ///         count — a dispute that expires unanswered is neither
+    ///         won nor lost, it just lapses. An attester who revokes
+    ///         their own record while it is disputed concedes the
+    ///         dispute in effect (the bond goes back to the subject),
+    ///         so that counts as conceded too. A record can contribute
+    ///         twice: once for its dispute ruling, once for its appeal
+    ///         ruling — credibility measures rulings, not records.
+    ///         Powers `attesterCredibility` and the credibility board.
+    mapping(address => uint256) private _disputesUpheld;
+    mapping(address => uint256) private _disputesConceded;
+
     /// @notice Fresh attestations per attester per UTC day, keyed by
     ///         `block.timestamp / 1 days`. Only fresh records count
     ///         (see `maxAttestationsPerDay`); re-attests never touch
@@ -1549,6 +1563,24 @@ contract ReputationRegistry {
     /// @notice Revoke your own attestation. The record stays readable but no
     ///         longer counts toward the subject's score, and you may attest
     ///         again afterwards (it creates a fresh record).
+    /// @notice Record one dispute ruling for an attester's credibility
+    ///         (see `_disputesUpheld` / `_disputesConceded`). Called
+    ///         from every path that rules on a dispute: the attester
+    ///         resolving it, the owner arbitrating an escalated
+    ///         dispute, the owner arbitrating an appeal, and the
+    ///         attester revoking a record while it is disputed
+    ///         (a concession in effect).
+    function _recordDisputeOutcome(
+        address attester,
+        bool uphold
+    ) internal {
+        if (uphold) {
+            _disputesUpheld[attester]++;
+        } else {
+            _disputesConceded[attester]++;
+        }
+    }
+
     function revokeAttestation(uint256 id) external nonReentrant {
         if (id >= _attestations.length) revert UnknownAttestation();
         Attestation storage a = _attestations[id];
@@ -1569,8 +1601,13 @@ contract ReputationRegistry {
         emit AttestationRevoked(id, msg.sender, a.subject);
         _recordSnapshot(a.subject, a.category);
         // A revoked dispute is a dispute the subject did not lose:
-        // the bond goes back to the subject.
-        if (wasDisputed) _settleDisputeBond(id, a.subject);
+        // the bond goes back to the subject. Withdrawing a disputed
+        // record concedes the dispute in effect, so it counts
+        // against the attester's credibility too.
+        if (wasDisputed) {
+            _settleDisputeBond(id, a.subject);
+            _recordDisputeOutcome(msg.sender, false);
+        }
     }
 
     /// @notice Dispute an attestation about you. Only the subject may
@@ -1645,6 +1682,7 @@ contract ReputationRegistry {
         }
         emit DisputeResolved(id, a.attester, a.subject, uphold);
         _recordSnapshot(a.subject, a.category);
+        _recordDisputeOutcome(a.attester, uphold);
         _settleDisputeBond(id, uphold ? a.attester : a.subject);
     }
 
@@ -1732,6 +1770,7 @@ contract ReputationRegistry {
         }
         emit DisputeResolvedByOwner(id, a.attester, a.subject, uphold);
         _recordSnapshot(a.subject, a.category);
+        _recordDisputeOutcome(a.attester, uphold);
         _settleDisputeBond(id, uphold ? a.attester : a.subject);
     }
 
@@ -1808,6 +1847,7 @@ contract ReputationRegistry {
         }
         emit AppealResolved(id, a.attester, a.subject, uphold);
         _recordSnapshot(a.subject, a.category);
+        _recordDisputeOutcome(a.attester, uphold);
         _settleDisputeBond(id, uphold ? a.attester : a.subject);
     }
 
