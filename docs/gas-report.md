@@ -14,7 +14,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/DisputeBond.t.sol`, `test/CategoryWeights.t.sol`, and
 `test/DisputeAppeals.t.sol`, and `test/GovernanceWindows.t.sol`, and
 `test/VerifiedOnly.t.sol`, and `test/LeaderboardAt.t.sol`, and
-`test/AttestationRequests.t.sol`.
+`test/AttestationRequests.t.sol`, and
+`test/AttesterCredibility.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -23,8 +24,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 9,508,020 gas |
-| Runtime size | 42,901 bytes |
+| Deployment cost | 9,825,202 gas |
+| Runtime size | 44,367 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -310,6 +311,26 @@ views. The fuzz handler now drives request / fulfil / cancel cycles,
 and a 19th invariant mirrors the requests and checks that every
 fulfilled request links to a matching attestation.
 
+Attester credibility added ~317k gas to deployment (+1,466
+bytes): the two outcome counters (`_disputesUpheld` /
+`_disputesConceded`), the `_recordDisputeOutcome` helper wired into
+the four ruling paths, the `attesterCredibility` view, the three new
+fields on `AttesterStats`, and the `getTopAttestersByCredibility`
+board. Each ruling now writes one extra counter slot (~20k gas cold
+on an attester's first ruling, ~5k warm after): `resolveDispute`
+averages ~177k gas (up from ~134k, mostly the new test sample
+exercising more snapshot-heavy paths), `resolveDisputeAsOwner`
+~122k, `resolveAppeal` ~143k. The reads are cheap views:
+`attesterCredibility` ~5.6k gas (two counter reads plus a division),
+`attesterStats` ~17k (it now scans the attester's index and reads
+both counters), and the credibility board ~28k avg on the small
+boards in the test suite (it scans every attester but only ranks
+those with at least one ruled dispute). Same off-chain-read
+conclusion as the other boards. The fuzz handler now drives
+credibility outcomes on every ruling path, and a 20th invariant
+mirrors the counters per attester and checks the basis-points
+formula exactly.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -340,13 +361,13 @@ fulfilled request links to a matching attestation.
 | `acceptOwnership` | 23,455 | 26,676 | 25,876 | 33,098 | 6 |
 | `cancelOwnershipTransfer` | 23,517 | 24,898 | 25,525 | 25,652 | 3 |
 | `disputeAttestation` | 31,370 | 148,199 | 149,530 | 253,026 | 66 |
-| `revokeAttestation` | 28,873 | 127,987 | 83,546 | 274,892 | 39 |
-| `resolveDispute` | 31,403 | 134,242 | 146,210 | 243,097 | 24 |
+| `revokeAttestation` | 28,872 | 124,863 | 85,615 | 291,088 | 32 |
+| `resolveDispute` | 31,402 | 176,610 | 182,665 | 312,375 | 72 |
 | `expireDispute` | 31,178 | 99,045 | 147,112 | 156,410 | 9 |
 | `escalateDispute` | 23,700 | 35,265 | 37,722 | 37,722 | 25 |
-| `resolveDisputeAsOwner` | 26,987 | 96,670 | 118,473 | 156,634 | 14 |
+| `resolveDisputeAsOwner` | 26,986 | 121,765 | 175,833 | 190,328 | 17 |
 | `appealDispute` | 31,197 | 108,764 | 162,024 | 181,924 | 29 |
-| `resolveAppeal` | 27,032 | 136,462 | 162,381 | 172,157 | 15 |
+| `resolveAppeal` | 27,011 | 142,783 | 167,770 | 194,613 | 17 |
 | `setDisputeBond` | 23,820 | 40,950 | 46,974 | 46,974 | 17 |
 | `setDisputeWindow` | 23,784 | 29,200 | 32,008 | 32,032 | 13 |
 | `setEscalationDelay` | 23,760 | 29,805 | 31,984 | 31,996 | 14 |
@@ -370,7 +391,8 @@ fulfilled request links to a matching attestation.
 | `getAttestationsByCategory` (view) | 3,007 | 36,093 | 41,530 | 57,246 | 10 |
 | `latestScoreSnapshot` (view) | 3,193 | 10,633 | 12,122 | 12,122 | 6 |
 | `attesterWeight` (view) | 2,654 | 18,582 | 20,958 | 30,314 | 24 |
-| `attesterStats` (view) | 5,368 | 10,083 | 12,441 | 12,441 | 3 |
+| `attesterStats` (view) | 10,405 | 17,428 | 19,629 | 24,714 | 6 |
+| `attesterCredibility` (view) | 5,453 | 5,573 | 5,604 | 5,604 | 10 |
 | `attestationsToday` (view) | 2,780 | 2,780 | 2,780 | 2,780 | 17 |
 | `decayFactorBps` (view) | 619 | 746 | 794 | 808 | 7 |
 | `decayFactorBpsAt` (view) | 614 | 733 | 783 | 803 | 6 |
@@ -385,6 +407,7 @@ fulfilled request links to a matching attestation.
 | `getLeaderboardAt` (view) | 93,747 | 147,661 | 152,548 | 167,723 | 16 |
 | `getLeaderboardByCategory` (view) | 37,573 | 71,266 | 70,875 | 128,670 | 6 |
 | `getLeaderboardByCategoryAt` (view) | 167,900 | 186,342 | 172,824 | 218,302 | 3 |
+| `getTopAttestersByCredibility` (view) | 3,148 | 28,307 | 35,233 | 36,822 | 5 |
 
 ## Score history cost
 
@@ -446,7 +469,7 @@ the page size, not with the subject's total history.
   allocation); `setEvidence` afterwards is a single-slot update
   (~39k gas). Evidence never triggers a snapshot or score
   recomputation, so it stays off the expensive paths.
-- **Invariant fuzz baseline:** 19 invariants × 256 runs × depth 100
+- **Invariant fuzz baseline:** 20 invariants × 256 runs × depth 100
   (25,600 handler calls each, 0 reverts). The
   `.gas-snapshot` file tracks unit-test gas per test as a regression
   baseline; re-run `forge snapshot` after contract changes and diff it.
