@@ -37,7 +37,7 @@ that travel with the worker, not the platform.
 - [x] Attestation requests (subjects ask a specific attester, fulfilment links the record)
 - [x] Attester credibility (dispute rulings tracked per attester, credibility score + board)
 - [x] Profile export + integration example (one-call FullProfile export, ReputationGate consumer example, Demo script)
-- [ ] Self-review checklist, then public
+- [x] Self-review checklist, then public
 
 ## Known limitations
 
