@@ -74,6 +74,13 @@ contract ReputationHandler is Test {
     // Strikes per actor, mirrored so attest() never calls as a
     // suspended attester (that would revert and mask an invariant).
     mapping(address => uint256) public strikes;
+    // Dispute outcomes per actor, mirrored so the credibility
+    // invariant can check the registry's counters: every ruling
+    // (attester resolve, owner arbitration, appeal ruling, and
+    // revoke-while-disputed as a concession) lands here exactly
+    // once, and a dispute that expires unanswered lands nowhere.
+    mapping(address => uint256) public credibilityUpheld;
+    mapping(address => uint256) public credibilityConceded;
     // Pause mirror: attest() never calls while paused (that would
     // revert), and pausedAtCount freezes the attestation count at
     // the moment of pausing for the frozen-count invariant.
@@ -197,8 +204,13 @@ contract ReputationHandler is Test {
         registry.revokeAttestation(id);
         _touch(recordSubject[id], recordCategory[id]);
         revoked[id] = true;
-        // Revoking while disputed settles the dispute — and its bond.
-        if (disputed[id]) _settleBond(id);
+        // Revoking while disputed settles the dispute — and its bond —
+        // and concedes it in effect, so the credibility mirror counts
+        // it against the attester.
+        if (disputed[id]) {
+            _settleBond(id);
+            _recordOutcome(recordAttester[id], false);
+        }
         disputed[id] = false;
         escalated[id] = false;
         disputedAt[id] = 0;
@@ -241,6 +253,18 @@ contract ReputationHandler is Test {
         bondOf[id] = 0;
     }
 
+    /// @notice Mirror one dispute ruling for the attester's
+    ///         credibility (see the registry's `_disputesUpheld` /
+    ///         `_disputesConceded`): uphold counts upheld, concede
+    ///         counts conceded, and expiry records nothing.
+    function _recordOutcome(address attester, bool uphold) internal {
+        if (uphold) {
+            credibilityUpheld[attester]++;
+        } else {
+            credibilityConceded[attester]++;
+        }
+    }
+
     function resolveDispute(uint256 seed, bool uphold) external {
         if (created == 0) return;
         uint256 id = seed % created;
@@ -252,6 +276,7 @@ contract ReputationHandler is Test {
         escalated[id] = false;
         disputedAt[id] = 0;
         _settleBond(id);
+        _recordOutcome(recordAttester[id], uphold);
         // An upheld resolution opens the subject's appeal window.
         if (uphold) {
             resolvedAt[id] = uint64(block.timestamp);
@@ -311,6 +336,7 @@ contract ReputationHandler is Test {
         escalated[id] = false;
         disputedAt[id] = 0;
         _settleBond(id);
+        _recordOutcome(recordAttester[id], uphold);
         // An upheld resolution opens the subject's appeal window.
         if (uphold) {
             resolvedAt[id] = uint64(block.timestamp);
@@ -360,6 +386,7 @@ contract ReputationHandler is Test {
         _touch(recordSubject[id], recordCategory[id]);
         appealed[id] = false;
         _settleBond(id);
+        _recordOutcome(recordAttester[id], uphold);
         if (!uphold) {
             revoked[id] = true;
             activeByKey[
@@ -1182,6 +1209,39 @@ contract ReputationInvariants is Test {
                 assertTrue(exists);
                 assertEq(found, i);
             }
+        }
+    }
+
+    /// @notice The handler's dispute-outcome mirror matches the
+    ///         registry's credibility counters exactly, and the
+    ///         basis-points score is exactly the upheld share (or
+    ///         10000 with no ruled dispute yet). Every ruling path
+    ///         — attester resolve, owner arbitration, appeal ruling,
+    ///         revoke-while-disputed as a concession — must land in
+    ///         the counters once, and a dispute that expires
+    ///         unanswered must land nowhere: a counter that drifted
+    ///         from the mirror would misstate an attester's track
+    ///         record on the board.
+    function invariant_credibility_mirror_matches() public view {
+        for (uint256 i = 0; i < actors.length; i++) {
+            (
+                uint256 bps,
+                uint256 upheld,
+                uint256 conceded
+            ) = registry.attesterCredibility(actors[i]);
+            assertEq(upheld, handler.credibilityUpheld(actors[i]));
+            assertEq(conceded, handler.credibilityConceded(actors[i]));
+            uint256 total = upheld + conceded;
+            if (total == 0) {
+                assertEq(bps, 10000);
+            } else {
+                assertEq(bps, (upheld * 10000) / total);
+            }
+            ReputationRegistry.AttesterStats memory st = registry
+                .attesterStats(actors[i]);
+            assertEq(st.disputesUpheld, upheld);
+            assertEq(st.disputesConceded, conceded);
+            assertEq(st.credibilityBps, bps);
         }
     }
 }
