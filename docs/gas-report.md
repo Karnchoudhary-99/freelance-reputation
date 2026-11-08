@@ -1,5 +1,11 @@
 # Gas report — ReputationRegistry
 
+> **Known limitation (EIP-170):** `ReputationRegistry` is 45,222 bytes of
+> runtime code, over the 24,576-byte limit for mainnet/testnet deployment.
+> All figures below are for the single-contract build, which deploys and
+> runs on local Anvil chains and in Foundry tests only. See
+> `README.md` → Known limitations.
+
 Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 200 runs), from the unit suites in `test/ReputationRegistry.t.sol`,
 `test/ScoreHistory.t.sol`, `test/ScorePreview.t.sol`,
