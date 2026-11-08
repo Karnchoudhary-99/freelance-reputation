@@ -15,7 +15,8 @@ Measured with `forge test --gas-report` (solc 0.8.24, optimizer on,
 `test/DisputeAppeals.t.sol`, and `test/GovernanceWindows.t.sol`, and
 `test/VerifiedOnly.t.sol`, and `test/LeaderboardAt.t.sol`, and
 `test/AttestationRequests.t.sol`, and
-`test/AttesterCredibility.t.sol`.
+`test/AttesterCredibility.t.sol`, and
+`test/ProfileExport.t.sol`, and `test/ReputationGate.t.sol`.
 Figures are from test calls, so first-write (cold storage) numbers are
 the high end and repeat writes the low end; treat them as indicative,
 not mainnet quotes.
@@ -24,8 +25,8 @@ not mainnet quotes.
 
 | Metric | Value |
 | --- | --- |
-| Deployment cost | 9,825,202 gas |
-| Runtime size | 44,367 bytes |
+| Deployment cost | 10,130,126 gas |
+| Runtime size | 45,776 bytes |
 
 Score history added ~307k gas to deployment (+1,419 bytes): the
 `_scoreHistory` mapping, the `ScoreSnapshot` struct, and the
@@ -331,6 +332,19 @@ credibility outcomes on every ruling path, and a 20th invariant
 mirrors the counters per attester and checks the basis-points
 formula exactly.
 
+Profile export added ~305k gas to deployment (+1,409 bytes): the
+`FullProfile` struct and the two one-call views (`getFullProfile` /
+`getFullProfileAt`), which compose the existing profile, tier,
+badge, snapshot, and proof reads without adding storage or writes.
+Writes are unaffected — the export is pure reads. The reads are
+views for off-chain `eth_call`: `getFullProfile` averages ~117k gas
+on the small subjects in the test suite (it scores all five scopes,
+then reads the latest snapshot and the stored proof), and
+`getFullProfileAt` ~120k. The `ReputationGate` example is a separate
+contract (`examples/ReputationGate.sol`) with its own deployment
+cost, not part of the registry's — it reads only `tierOf` and
+`getScore`, so gating costs a few thousand gas per check.
+
 ## Function costs (gas)
 
 | Function | Min | Avg | Median | Max | Calls |
@@ -399,6 +413,8 @@ formula exactly.
 | `getScoreAt` (view) | 10,096 | 17,139 | 16,614 | 25,861 | 15 |
 | `getScoreByCategoryAt` (view) | 24,874 | 24,874 | 24,874 | 24,874 | 2 |
 | `getProfileAt` (view) | 47,411 | 47,411 | 47,411 | 47,411 | 1 |
+| `getFullProfile` (view) | 23,947 | 117,054 | 130,191 | 144,615 | 10 |
+| `getFullProfileAt` (view) | 110,532 | 119,984 | 119,984 | 129,436 | 2 |
 | `tierOfAt` (view) | 31,117 | 33,709 | 34,949 | 35,062 | 3 |
 | `getBadges` (view) | 3,717 | 116,193 | 53,601 | 461,439 | 18 |
 | `getBadgesAt` (view) | 3,700 | 45,544 | 53,584 | 79,349 | 3 |

@@ -36,6 +36,7 @@ that travel with the worker, not the platform.
 - [x] Time-windowed leaderboards (leaderboard as of any past/future time, category boards)
 - [x] Attestation requests (subjects ask a specific attester, fulfilment links the record)
 - [x] Attester credibility (dispute rulings tracked per attester, credibility score + board)
+- [x] Profile export + integration example (one-call FullProfile export, ReputationGate consumer example, Demo script)
 - [ ] Self-review checklist, then public
 
 ## Reputation registry
@@ -831,6 +832,56 @@ around to attesting.
   `getOpenRequestsBySubject` (oldest first, fulfilled / cancelled /
   expired filtered out, empty page past the end).
 
+### Profile export
+
+Everything a marketplace needs to render one freelancer's reputation
+card costs a single RPC call: `getFullProfile(subject)` returns a
+`FullProfile` — the full `Profile` (overall + all four category
+scores), the `Tier` and `Badge[]` derived from it, the most recent
+frozen overall score snapshot (`latestSnapshot` + `hasSnapshot`), and
+the subject's latest score proof (`proof` + `hasProof`). Every field
+agrees with the single-purpose view that owns it (`getProfile`,
+`tierOf`, `getBadges`, `latestScoreSnapshot`, `scoreProofOf`); the
+export only saves round trips, it never re-derives anything. Unknown
+subjects return an all-zero export (Unranked, no badges, no snapshot,
+no proof), exactly like the single views do for them.
+`getFullProfileAt(subject, when)` is the decay-preview version:
+profile, tier, and badges as they will stand (or stood) at `when`,
+with the same preview semantics as `getProfileAt` / `tierOfAt`.
+The snapshot and proof in both exports are frozen records, returned
+as they stand — after time passes (decay, expiry) they can differ
+from the live profile, which is the point: one call shows both the
+live reputation and the last certified/frozen state.
+
+### Integration guide
+
+A consumer contract never imports the registry: it talks to the two
+views it needs through a minimal interface (see
+`examples/ReputationGate.sol`). The example gates an action on tier
+and average:
+
+```solidity
+interface IReputationRegistry {
+    function getScore(address subject) external view returns (
+        uint256 average, uint256 count, uint256, uint256);
+    function tierOf(address subject) external view returns (uint8);
+}
+
+ReputationGate gate = new ReputationGate(address(registry), 2, 6000);
+require(gate.isEligible(alice)); // Established tier + average 60+
+gate.gatedAction(alice);
+```
+
+Tiers are `Unranked 0, Emerging 1, Established 2, Trusted 3, Elite 4`
+and averages are scaled by 100. A subject with no attestations is
+Unranked with average 0, so they fail every non-trivial gate. The
+gate's thresholds are retunable by its owner; lowering them never
+rewrites anyone's reputation. Off-chain integrators should prefer
+`getFullProfile` (one call) or `verifyScoreProof` (check a presented
+certificate without reading the live score at all). The full flow —
+deploy, attest, export, proof, gate — runs locally with
+`forge script script/Demo.s.sol`.
+
 ### Example flow
 
 ```text
@@ -887,13 +938,14 @@ the basis-points score exactly the upheld share (10000 with no ruled
 dispute yet).
 Baseline: 20 invariants × 256 runs × depth 100 — 25,600 handler calls
 each, 0 reverts. See `docs/gas-report.md` for deployment and
-per-function gas (deploy 9,825,202 gas, 44,367 bytes runtime).
+per-function gas (deploy 10,130,126 gas, 45,776 bytes runtime).
 
 ### Run it
 
 ```sh
-forge test          # 431 tests (411 unit + 20 invariants)
+forge test          # 447 tests (427 unit + 20 invariants)
 forge script script/Deploy.s.sol   # simulated deploy
+forge script script/Demo.s.sol     # end-to-end demo (deploy, attest, export, proof, gate)
 ```
 
 ## License
