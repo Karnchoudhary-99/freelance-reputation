@@ -39,6 +39,19 @@ that travel with the worker, not the platform.
 - [x] Profile export + integration example (one-call FullProfile export, ReputationGate consumer example, Demo script)
 - [ ] Self-review checklist, then public
 
+## Known limitations
+
+- **Contract size (EIP-170).** `ReputationRegistry` compiles to 45,222 bytes
+  of runtime code (optimizer on, runs=200; runs=1 gives 44,438), over the
+  24,576-byte EIP-170 limit for contracts deployed to Ethereum mainnet or
+  public testnets. It deploys and runs fine on local Anvil chains and in
+  Foundry tests (447 tests green), and that is how the demo works — but a
+  live-chain deployment as a single contract would revert. Fixing it means
+  splitting the registry into modules (core + view/extension contracts) or a
+  proxy/diamond pattern; that refactor is future work, not done here. Deploy
+  gas and runtime figures in `docs/gas-report.md` are for the single-contract
+  build.
+
 ## Reputation registry
 
 `ReputationRegistry` is the core contract. Attestations travel with the
